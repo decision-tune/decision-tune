@@ -16,6 +16,12 @@ pip install "decision-tune[mlx]"        # adds MLX on Apple silicon, selected au
 pip install "decision-tune[onnx]"       # adds onnxruntime: --backend onnx
 ```
 
+Docker (CPU):
+
+```bash
+docker run --rm -p 8000:8000 -v dt-cache:/root/.cache/huggingface ghcr.io/decision-tune/decision-tune serve --host 0.0.0.0 --yes
+```
+
 MLX backend powered by laya-mlx (Apache-2.0).
 
 ## Python
