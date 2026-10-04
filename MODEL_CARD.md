@@ -151,7 +151,7 @@ Sources: BANKING77 (CC BY 4.0), CLINC150 (CC BY 3.0), GSM8K (MIT), WinoGrande (C
 
 ## Disclosures
 
-- **Test-informed plan.** We ran the full index six times during development. We designed several fixes after we saw index results. We used no index rows, labels or option texts as training data.
+- **Test-informed plan.** We ran the full index eight times during development. We designed several fixes after we saw index results. We used no index rows, labels or option texts as training data.
 - **Contamination audit.** Our overlap check dropped 0 of 270,624 training rows. Caveats: 47 rows overlap our own practice set, not the index. ContractNLI rows share boilerplate with test contracts (max Jaccard 0.482, under the 0.5 line). One older data pool was not scanned again.
 - **GSM8K.** In the index, the GSM8K gold answer is always the center option. With GSM8K at our starting model's value, DecisionTune 1.0 scores 28.48. We report both numbers.
 - **Two seeds.** A second training run with a different random seed scored 29.13 (raw 45.96). The two seeds differ by 0.44 points, and both are above Dinah-0.
