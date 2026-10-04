@@ -1,0 +1,48 @@
+[build-system]
+requires = ["hatchling>=1.26"]
+build-backend = "hatchling.build"
+
+[project]
+name = "decision-tune"
+version = "1.0.0"
+description = "DecisionTune 1.0: a 395M decision model. Pick an option, or get P(yes), with one encoder pass."
+readme = "README.md"
+license = "Apache-2.0"
+license-files = ["LICENSE"]
+authors = [{ name = "DecisionTune" }]
+requires-python = ">=3.10"
+keywords = ["decision", "classification", "routing", "modernbert", "encoder"]
+classifiers = [
+  "Development Status :: 5 - Production/Stable",
+  "Intended Audience :: Developers",
+  "Programming Language :: Python :: 3",
+  "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+dependencies = [
+  "torch>=2.4",
+  "transformers>=5.0",
+  "tokenizers>=0.21",
+  "safetensors>=0.4",
+  "huggingface_hub>=0.34",
+  "numpy",
+]
+
+[project.optional-dependencies]
+onnx = ["onnxruntime>=1.20"]
+mlx = ["laya-mlx==0.3.0; sys_platform == 'darwin' and platform_machine == 'arm64'"]
+test = ["pytest"]
+
+[project.urls]
+Homepage = "https://decisiontune.com"
+Source = "https://github.com/decision-tune/decision-tune"
+Model = "https://huggingface.co/decision-tune/decisiontune-1.0"
+Demo = "https://huggingface.co/spaces/decision-tune/demo"
+
+[project.scripts]
+decision-tune = "decision_tune.cli:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/decision_tune"]
+
+[tool.hatch.build.targets.sdist]
+include = ["src", "tests", "README.md", "LICENSE", "manifest.json", "pyproject.toml"]

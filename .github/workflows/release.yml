@@ -1,0 +1,44 @@
+name: release
+
+# On publishing the v1.0.0 GitHub release: run the tests, check the pinned manifest hash,
+# run one decision end to end on CPU, then sign manifest.json with Sigstore (keyless, GitHub OIDC)
+# and attach the signature bundle to the release.
+
+on:
+  release:
+    types: [published]
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install (CPU torch)
+        run: |
+          pip install torch --index-url https://download.pytorch.org/whl/cpu
+          pip install ".[test]"
+      - name: Unit tests (pinned manifest hash, tamper refusal)
+        run: pytest -q
+      - name: End to end on CPU
+        run: |
+          decision-tune download --yes --backend torch
+          decision-tune ask "Which team handles this?" --state "The order arrived broken." --option billing --option shipping --option "tech support" --backend torch
+
+  sign:
+    needs: test
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: sigstore/gh-action-sigstore-python@v3.5.0
+        with:
+          inputs: manifest.json
+          release-signing-artifacts: true

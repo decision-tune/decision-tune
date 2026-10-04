@@ -1,0 +1,36 @@
+{
+  "files": {
+    "config.json": {
+      "bytes": 2048,
+      "sha256": "de3aa35c31c0b6a7e1eed42c7f6195d20f6092c9846b1447888e42f914809890"
+    },
+    "engine.py": {
+      "bytes": 8181,
+      "sha256": "e412c0c00140c4082e5df8aee4ce55210c7d5e725aca609de37634e6262ab091"
+    },
+    "head.safetensors": {
+      "bytes": 4244,
+      "sha256": "ea0664c8fe1dd9fdd95f2113a1760f191e7ea5e04a8c0dc53774e3caa11ef9c8"
+    },
+    "model.safetensors": {
+      "bytes": 1579143656,
+      "sha256": "2357c3d8bdf8b03e976b2a0c4ba7c2f751f7ec813e5d434c301fd609f64c0fa2"
+    },
+    "onnx/model.onnx": {
+      "bytes": 1579877218,
+      "sha256": "cb78a8217d627fd7b17335c5d849184bd470d9c3d4dbc0537de7831162bd4c94"
+    },
+    "tokenizer.json": {
+      "bytes": 3583228,
+      "sha256": "6c8aaa9a542084f2457eab775d4eeb51f92a70c0fd9de28d5edb0ddec3c08d30"
+    },
+    "tokenizer_config.json": {
+      "bytes": 351,
+      "sha256": "cbea6a0ec8bf4a66475f458a359223ec17f1ac36b2f5797036a76140daa065de"
+    }
+  },
+  "license": "Apache-2.0",
+  "name": "DecisionTune 1.0",
+  "repo": "decision-tune/decisiontune-1.0",
+  "version": "1.0.0"
+}
