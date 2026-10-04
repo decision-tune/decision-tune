@@ -31,15 +31,31 @@ datasets:
   - osyvokon/pavlick-formality-scores
 ---
 
-<p align="center"><img src="https://decisiontune.com/brand/out/lockup.svg" alt="DecisionTune" width="360"></p>
+<p align="center"><img src="https://huggingface.co/decision-tune/decisiontune-1.0/resolve/main/assets/social-1280x640.png" alt="DecisionTune: fast decisions for your app, on your own machine. 29.57 on Decision Index 0.2.1." width="100%"></p>
+
+<p align="center"><img src="https://img.shields.io/badge/Decision%20Index%200.2.1-29.57-da3200?style=flat-square" alt="Decision Index 0.2.1: 29.57"> <img src="https://img.shields.io/badge/size-395M-151b24?style=flat-square" alt="395M parameters"> <img src="https://img.shields.io/badge/license-Apache--2.0-151b24?style=flat-square" alt="Apache-2.0"> <img src="https://img.shields.io/badge/runs%20on-PyTorch%20%7C%20MLX%20%7C%20ONNX-4f5661?style=flat-square" alt="PyTorch, MLX, ONNX"></p>
+
+<p align="center"><b><a href="https://decisiontune.com">Website</a> &nbsp;•&nbsp; <a href="https://huggingface.co/spaces/decision-tune/demo">Demo</a> &nbsp;•&nbsp; <a href="https://github.com/decision-tune/decision-tune">GitHub</a> &nbsp;•&nbsp; <a href="https://pypi.org/project/decision-tune/">PyPI</a></b></p>
 
 # DecisionTune 1.0
 
 DecisionTune 1.0 is a 395M decision model. Give it a state, a question and a list of options: it picks one and gives a probability for each. Or ask a yes/no question and get P(yes). One encoder pass, no text generation. It scores 29.57 on Decision Index 0.2.1. All numbers are measured on our own runs unless marked as an estimate.
 
+**Key features**
+
+- **29.57 on Decision Index 0.2.1**, the highest score we can see under 500M parameters (board as of 2026-10-03).
+- **Pick an option, or get P(yes).** A probability for every option, from one encoder pass with no text generation.
+- **Fast on a laptop.** 25.9 ms per request at the median in our index run, no GPU server.
+- **Runs on your machine.** PyTorch, MLX on Apple silicon, or ONNX. Weights under Apache-2.0.
+
+<p align="center"><img src="https://huggingface.co/decision-tune/decisiontune-1.0/resolve/main/assets/example-decision.png" alt="Real output of DecisionTune 1.0: for the state 'The order arrived broken.' it picks Shipping at 71.2 percent, over Tech support at 20.9 and Billing at 7.9. Recorded on a laptop CPU in 361 ms." width="680"></p>
+
 Weights: Apache-2.0. Package: [`decision-tune`](https://pypi.org/project/decision-tune/) ([source](https://github.com/decision-tune/decision-tune)). Demo: [decision-tune/demo](https://huggingface.co/spaces/decision-tune/demo). Site: [decisiontune.com](https://decisiontune.com).
 
 ## How to use
+
+> [!TIP]
+> Describe your options. Short descriptions ("Shipping: delivery, lost or damaged packages") work much better than bare labels ("shipping").
 
 The package is small. On first use it asks before it downloads the weights (1.58 GB) into your Hugging Face cache, then checks every file against `manifest.json`.
 
@@ -91,6 +107,8 @@ python -c 'from engine import DecisionModel; print(DecisionModel(".").yes_no("Th
 
 ## How it works
 
+<p align="center"><img src="https://huggingface.co/decision-tune/decisiontune-1.0/resolve/main/assets/how-it-works.png" alt="You give it a state, a question and options. DecisionTune 1.0 makes one forward pass. You get back the choice and a probability for every option, or P(yes)." width="100%"></p>
+
 ModernBERT-large plus a 4 KB scoring head. Each question becomes one sequence:
 
 `[CLS] question [SEP] [MASK] option_1 [MASK] option_2 ... [SEP] state [SEP]`
@@ -103,13 +121,19 @@ Decision Index 0.2.1, one full run: 29.57 (raw 46.80). 150,317 scoreable request
 
 Under 500M parameters, the highest other entry we can see is Dinah-0 at 27.63 (150M, pending, not merged). DecisionTune 1.0 is 1.94 points above it. Board as of 2026-10-03.
 
-| Area (skill) | DecisionTune 1.0 | DecisionTune 0.9 Preview | Change |
-|---|---|---|---|
-| Knowledge & Reasoning | 13.3 | 12.2 | +1.1 |
-| Language Understanding | 31.5 | 29.0 | +2.5 |
-| Retrieval & Classification | 45.0 | 44.8 | +0.2 |
-| Tools & Automation | 46.5 | 28.1 | +18.4 |
-| Arts & Human Taste | 4.8 | 3.7 | +1.1 |
+<p align="center"><img src="https://huggingface.co/decision-tune/decisiontune-1.0/resolve/main/assets/chart_a_size_class.svg" alt="Decision Index by size for entrants up to 2B. DecisionTune 1.0 scores 29.57 at 395M parameters." width="100%"></p>
+
+| Area (skill) | DecisionTune 1.0 | DecisionTune 0.9 Preview | Change | Dinah-0 |
+|---|---:|---:|---:|---:|
+| Knowledge & Reasoning | 13.3 | 12.2 | +1.1 | **19.1** |
+| Language Understanding | **31.5** | 29.0 | +2.5 | 22.7 |
+| Retrieval & Classification | 45.0 | 44.8 | +0.2 | **47.8** |
+| Tools & Automation | **46.5** | 28.1 | +18.4 | 37.9 |
+| Arts & Human Taste | **4.8** | 3.7 | +1.1 | 3.5 |
+
+Bold: the best number in each row.
+
+<p align="center"><img src="https://huggingface.co/decision-tune/decisiontune-1.0/resolve/main/assets/chart_b_areas.svg" alt="Per area skill, DecisionTune 1.0 against DecisionTune 0.9 Preview. Tools and Automation rises from 28.1 to 46.5." width="100%"></p>
 
 DecisionTune 0.9 Preview is our earlier clean model; it scores 25.12. Nine benchmarks score 0.0, including ANLI, GPQA Diamond, ChessBench and HLE.
 

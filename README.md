@@ -1,12 +1,21 @@
-<p align="center"><img src="https://decisiontune.com/brand/out/lockup.svg" alt="DecisionTune" width="360"></p>
+<p align="center"><img src="https://decisiontune.com/brand/out/social-1280x640.png" alt="DecisionTune: fast decisions for your app, on your own machine. 29.57 on Decision Index 0.2.1." width="100%"></p>
+
+<p align="center"><img src="https://img.shields.io/badge/Decision%20Index%200.2.1-29.57-da3200?style=flat-square" alt="Decision Index 0.2.1: 29.57"> <img src="https://img.shields.io/badge/size-395M-151b24?style=flat-square" alt="395M parameters"> <img src="https://img.shields.io/badge/license-Apache--2.0-151b24?style=flat-square" alt="Apache-2.0"> <img src="https://img.shields.io/badge/runs%20on-PyTorch%20%7C%20MLX%20%7C%20ONNX-4f5661?style=flat-square" alt="PyTorch, MLX, ONNX"></p>
+
+<p align="center"><b><a href="https://decisiontune.com">Website</a> &nbsp;•&nbsp; <a href="https://huggingface.co/spaces/decision-tune/demo">Demo</a> &nbsp;•&nbsp; <a href="https://huggingface.co/decision-tune/decisiontune-1.0">Model card</a> &nbsp;•&nbsp; <a href="https://pypi.org/project/decision-tune/">PyPI</a></b></p>
 
 # decision-tune
 
 DecisionTune 1.0 is a 395M decision model. Give it a state, a question and options: it picks one and gives a probability for each. Or ask a yes/no question and get P(yes). One encoder pass, no text generation, runs on a laptop CPU. It scores 29.57 on Decision Index 0.2.1.
 
-- Model card, results and data licenses: [huggingface.co/decision-tune/decisiontune-1.0](https://huggingface.co/decision-tune/decisiontune-1.0)
-- Demo (recorded examples): [huggingface.co/spaces/decision-tune/demo](https://huggingface.co/spaces/decision-tune/demo)
-- Site: [decisiontune.com](https://decisiontune.com)
+**Key features**
+
+- **29.57 on Decision Index 0.2.1**, the highest score we can see under 500M parameters (board as of 2026-10-03).
+- **Pick an option, or get P(yes).** A probability for every option, from one encoder pass with no text generation.
+- **Fast on a laptop.** 25.9 ms per request at the median in our index run, no GPU server.
+- **Runs on your machine.** PyTorch, MLX on Apple silicon, or ONNX. Weights under Apache-2.0.
+
+<p align="center"><img src="https://decisiontune.com/brand/out/example-decision.png" alt="Real output of DecisionTune 1.0: for the state 'The order arrived broken.' it picks Shipping at 71.2 percent, over Tech support at 20.9 and Billing at 7.9. Recorded on a laptop CPU in 361 ms." width="680"></p>
 
 The package is small. On first use it asks `Download DecisionTune 1.0 (1.58 GB, Apache-2.0) from Hugging Face? [Y/n]`, caches the files in your Hugging Face cache, and checks every file against a SHA-256 manifest before it loads anything.
 
@@ -28,6 +37,9 @@ MLX backend powered by laya-mlx (Apache-2.0).
 
 ## Python
 
+> [!TIP]
+> Describe your options. Short descriptions ("Shipping: delivery, lost or damaged packages") work much better than bare labels ("shipping").
+
 ```python
 from decision_tune import DecisionModel
 
@@ -44,6 +56,12 @@ m.yes_no("The order arrived broken. I want my money back.", "Is the customer ask
 Options can also be a dict of `{key: description}`; the description is what the model reads and the key is what you get back. A state can be a string or a JSON object.
 
 **Tip: describe your options.** Short descriptions ("Shipping: delivery, lost or damaged packages") work much better than bare labels ("shipping"). Vague judgment questions with no criteria, such as "Is this urgent?", are a weak spot: spell out what counts.
+
+## How it works
+
+<p align="center"><img src="https://decisiontune.com/brand/out/how-it-works.png" alt="You give it a state, a question and options. DecisionTune 1.0 makes one forward pass. You get back the choice and a probability for every option, or P(yes)." width="100%"></p>
+
+Full results, training data and limits: [model card](https://huggingface.co/decision-tune/decisiontune-1.0).
 
 ## Command line
 
