@@ -43,7 +43,7 @@ DecisionTune 1.0 is a 395M decision model. Give it a state, a question and a lis
 
 **Key features**
 
-- **29.57 on Decision Index 0.2.1**, the highest score we can see under 500M parameters (board as of 2026-10-03).
+- **29.57 on Decision Index 0.2.1**, from one complete run. A second seed scored 29.13.
 - **Pick an option, or get P(yes).** A probability for every option, from one encoder pass with no text generation.
 - **Fast on a laptop.** 25.9 ms per request at the median in our index run, no GPU server.
 - **Runs on your machine.** PyTorch, MLX on Apple silicon, or ONNX. Weights under Apache-2.0.
@@ -119,17 +119,13 @@ The head scores the hidden state at every `[MASK]`. The probabilities are the so
 
 Decision Index 0.2.1, one full run: 29.57 (raw 46.80). 150,317 scoreable requests: 150,309 ok, 8 unsupported. The context limit is 8,192 tokens.
 
-Under 500M parameters, the highest other entry we can see is Dinah-0 at 27.63 (150M, pending, not merged). DecisionTune 1.0 is 1.94 points above it. Board as of 2026-10-03.
-
-<p align="center"><img src="https://huggingface.co/decision-tune/decisiontune-1.0/resolve/main/assets/chart_a_size_class.svg" alt="Decision Index by size for entrants up to 2B. DecisionTune 1.0 scores 29.57 at 395M parameters." width="100%"></p>
-
-| Area (skill) | DecisionTune 1.0 | DecisionTune 0.9 Preview | Change | Dinah-0 |
-|---|---:|---:|---:|---:|
-| Knowledge & Reasoning | 13.3 | 12.2 | +1.1 | **19.1** |
-| Language Understanding | **31.5** | 29.0 | +2.5 | 22.7 |
-| Retrieval & Classification | 45.0 | 44.8 | +0.2 | **47.8** |
-| Tools & Automation | **46.5** | 28.1 | +18.4 | 37.9 |
-| Arts & Human Taste | **4.8** | 3.7 | +1.1 | 3.5 |
+| Area (skill) | DecisionTune 1.0 | DecisionTune 0.9 Preview | Change |
+|---|---:|---:|---:|
+| Knowledge & Reasoning | **13.3** | 12.2 | +1.1 |
+| Language Understanding | **31.5** | 29.0 | +2.5 |
+| Retrieval & Classification | **45.0** | 44.8 | +0.2 |
+| Tools & Automation | **46.5** | 28.1 | +18.4 |
+| Arts & Human Taste | **4.8** | 3.7 | +1.1 |
 
 Bold: the best number in each row.
 
@@ -137,7 +133,7 @@ Bold: the best number in each row.
 
 DecisionTune 0.9 Preview is our earlier clean model; it scores 25.12. Nine benchmarks score 0.0, including ANLI, GPQA Diamond, ChessBench and HLE.
 
-**JevBench.** We ran its public set of 231 tasks on our own machine. DecisionTune 1.0 answers 55.0% correctly (127 of 231, 95% CI 48.1 to 61.5). On JevBench, DecisionTune 1.0 is not at the top of its size class. Public results for models under 500M parameters range from 22.1% to 62.8%. At least seven of them are above DecisionTune 1.0. This is the public set only, not a JevBench board score.
+**JevBench.** We ran its public set of 231 tasks on our own machine. DecisionTune 1.0 answers 55.0% correctly (127 of 231, 95% CI 48.1 to 61.5). This is the public set only, not a JevBench board score.
 
 **Speed.** In the index run: 25.9 ms per request, p95 407.8 ms (our laptop). Your hardware will differ.
 
@@ -180,7 +176,7 @@ Sources: BANKING77 (CC BY 4.0), CLINC150 (CC BY 3.0), GSM8K (MIT), WinoGrande (C
 - **Test-informed plan.** We ran the full index eight times during development. We designed several fixes after we saw index results. We used no index rows, labels or option texts as training data.
 - **Contamination audit.** Our overlap check dropped 0 of 270,624 training rows. Caveats: 47 rows overlap our own practice set, not the index. ContractNLI rows share boilerplate with test contracts (max Jaccard 0.482, under the 0.5 line). One older data pool was not scanned again.
 - **GSM8K.** In the index, the GSM8K gold answer is always the center option. With GSM8K at our starting model's value, DecisionTune 1.0 scores 28.48. We report both numbers.
-- **Two seeds.** A second training run with a different random seed scored 29.13 (raw 45.96). The two seeds differ by 0.44 points, and both are above Dinah-0.
+- **Two seeds.** A second training run with a different random seed scored 29.13 (raw 45.96). The two seeds differ by 0.44 points.
 
 ## Verify your download
 

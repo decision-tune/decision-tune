@@ -10,7 +10,7 @@ DecisionTune 1.0 is a 395M decision model. Give it a state, a question and optio
 
 **Key features**
 
-- **29.57 on Decision Index 0.2.1**, the highest score we can see under 500M parameters (board as of 2026-10-03).
+- **29.57 on Decision Index 0.2.1**, from one complete run. A second seed scored 29.13.
 - **Pick an option, or get P(yes).** A probability for every option, from one encoder pass with no text generation.
 - **Fast on a laptop.** 25.9 ms per request at the median in our index run, no GPU server.
 - **Runs on your machine.** PyTorch, MLX on Apple silicon, or ONNX. Weights under Apache-2.0.
