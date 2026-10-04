@@ -1,0 +1,102 @@
+[
+ {
+  "kind": "choose",
+  "state": "The order arrived broken.",
+  "question": "Which team should handle this customer message?",
+  "options": {
+   "billing": "Billing: charges, refunds, invoices",
+   "shipping": "Shipping: delivery, lost or damaged packages",
+   "tech": "Tech support: bugs, crashes, login problems"
+  },
+  "result": {
+   "choice": "shipping",
+   "probabilities": {
+    "billing": 0.07933719498194301,
+    "shipping": 0.7119619864162109,
+    "tech": 0.20870081860184608
+   },
+   "confidence": 0.7119619864162109
+  },
+  "ms": 361
+ },
+ {
+  "kind": "choose",
+  "state": "I was charged twice this month.",
+  "question": "Which team should handle this customer message?",
+  "options": {
+   "billing": "Billing: charges, refunds, invoices",
+   "shipping": "Shipping: delivery, lost or damaged packages",
+   "tech": "Tech support: bugs, crashes, login problems"
+  },
+  "result": {
+   "choice": "billing",
+   "probabilities": {
+    "billing": 0.9767103099166875,
+    "shipping": 0.01507693381781696,
+    "tech": 0.008212756265495565
+   },
+   "confidence": 0.9767103099166875
+  },
+  "ms": 353
+ },
+ {
+  "kind": "choose",
+  "state": "The app crashes every time I open the settings page.",
+  "question": "Which team should handle this customer message?",
+  "options": {
+   "billing": "Billing: charges, refunds, invoices",
+   "shipping": "Shipping: delivery, lost or damaged packages",
+   "tech": "Tech support: bugs, crashes, login problems"
+  },
+  "result": {
+   "choice": "tech",
+   "probabilities": {
+    "billing": 0.0582407291652671,
+    "shipping": 0.05931008510958002,
+    "tech": 0.882449185725153
+   },
+   "confidence": 0.882449185725153
+  },
+  "ms": 371
+ },
+ {
+  "kind": "choose",
+  "state": "What is the weather tomorrow in Paris?",
+  "question": "Which tool should be called?",
+  "options": {
+   "get_weather": "get_weather: forecast for a city and date",
+   "send_email": "send_email: send an email to a contact",
+   "create_calendar_event": "create_calendar_event: add an event to the calendar"
+  },
+  "result": {
+   "choice": "get_weather",
+   "probabilities": {
+    "get_weather": 0.9977329209108146,
+    "send_email": 0.0012514958067585407,
+    "create_calendar_event": 0.0010155832824267793
+   },
+   "confidence": 0.9977329209108146
+  },
+  "ms": 342
+ },
+ {
+  "kind": "yes_no",
+  "state": "The order arrived broken. I want my money back.",
+  "question": "Is the customer asking for a refund?",
+  "options": null,
+  "result": {
+   "p_yes": 0.9960206302572099
+  },
+  "ms": 237
+ },
+ {
+  "kind": "yes_no",
+  "state": "Thanks, the replacement arrived and works great!",
+  "question": "Is the customer asking for a refund?",
+  "options": null,
+  "result": {
+   "p_yes": 0.0016186048328875886
+  },
+  "ms": 237
+ }
+]

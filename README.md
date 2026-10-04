@@ -3,7 +3,7 @@
 DecisionTune 1.0 is a 395M decision model. Give it a state, a question and options: it picks one and gives a probability for each. Or ask a yes/no question and get P(yes). One encoder pass, no text generation, runs on a laptop CPU. It scores 29.57 on Decision Index 0.2.1.
 
 - Model card, results and data licenses: [huggingface.co/decision-tune/decisiontune-1.0](https://huggingface.co/decision-tune/decisiontune-1.0)
-- Live demo: [huggingface.co/spaces/decision-tune/demo](https://huggingface.co/spaces/decision-tune/demo)
+- Demo (recorded examples): [huggingface.co/spaces/decision-tune/demo](https://huggingface.co/spaces/decision-tune/demo)
 - Site: [decisiontune.com](https://decisiontune.com)
 
 The package is small. On first use it asks `Download DecisionTune 1.0 (1.58 GB, Apache-2.0) from Hugging Face? [Y/n]`, caches the files in your Hugging Face cache, and checks every file against a SHA-256 manifest before it loads anything.

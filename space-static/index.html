@@ -1,0 +1,46 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>DecisionTune 1.0 Demo</title>
+<style>
+:root{--bg:#fbfaf8;--fg:#151b24;--muted:#4f5661;--line:#e5e8ec;--accent:#da3200;--card:#fff;--code:#f3f2ef}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--fg);font:16px/1.55 -apple-system,BlinkMacSystemFont,"Segoe UI",Helvetica,Arial,sans-serif}
+main{max-width:760px;margin:0 auto;padding:28px 16px 56px}h1{font-size:26px;margin:0 0 6px}
+.sub{color:var(--muted);margin:0 0 20px}.tabs{display:flex;flex-wrap:wrap;gap:8px;margin:12px 0 16px}
+.tabs button{border:1px solid var(--line);background:var(--card);border-radius:999px;padding:6px 12px;font:inherit;font-size:14px;cursor:pointer;color:var(--fg)}
+.tabs button[aria-pressed=true]{border-color:var(--accent);color:var(--accent)}
+.card{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:16px}
+.lbl{font-size:12px;text-transform:uppercase;letter-spacing:.06em;color:var(--muted);margin-top:10px}
+.row{display:grid;grid-template-columns:minmax(90px,38%) 1fr 56px;gap:10px;align-items:center;margin:8px 0;font-size:14px}
+.bar{height:12px;background:var(--line);border-radius:6px;overflow:hidden}.bar i{display:block;height:100%;background:#8a939f}
+.row.top .bar i{background:var(--accent)}.row.top b{color:var(--accent)}.num{text-align:right;font-variant-numeric:tabular-nums}
+pre{background:var(--code);padding:12px;border-radius:8px;overflow-x:auto;font-size:13px}a{color:var(--accent)}
+.note{font-size:13px;color:var(--muted)}
+</style></head><body><main>
+<h1>DecisionTune 1.0</h1>
+<p class="sub">A 395M decision model. Give it a state, a question and options: it picks one and gives a probability for each. Or ask a yes/no question and get P(yes).</p>
+<div class="tabs" id="tabs" role="group" aria-label="Examples"></div>
+<div class="card" id="out" aria-live="polite"></div>
+<p class="note">These are real outputs from DecisionTune 1.0 (PyTorch backend, laptop CPU), recorded on 2026-10-04. To try your own text, run it on your machine:</p>
+<pre>pip install decision-tune
+decision-tune ask "Is the customer asking for a refund?" --state "The order arrived broken. I want my money back."
+
+# or with Docker
+docker run --rm -p 8000:8000 ghcr.io/decision-tune/decision-tune serve --host 0.0.0.0 --yes</pre>
+<p class="note">Model and card: <a href="https://huggingface.co/decision-tune/decisiontune-1.0">decision-tune/decisiontune-1.0</a> (Apache-2.0). Code: <a href="https://github.com/decision-tune/decision-tune">github.com/decision-tune/decision-tune</a>. Site: <a href="https://decisiontune.com">decisiontune.com</a>.</p>
+</main>
+<script>
+const EX=[{"kind": "choose", "state": "The order arrived broken.", "question": "Which team should handle this customer message?", "options": {"billing": "Billing: charges, refunds, invoices", "shipping": "Shipping: delivery, lost or damaged packages", "tech": "Tech support: bugs, crashes, login problems"}, "result": {"choice": "shipping", "probabilities": {"billing": 0.07933719498194301, "shipping": 0.7119619864162109, "tech": 0.20870081860184608}, "confidence": 0.7119619864162109}, "ms": 361}, {"kind": "choose", "state": "I was charged twice this month.", "question": "Which team should handle this customer message?", "options": {"billing": "Billing: charges, refunds, invoices", "shipping": "Shipping: delivery, lost or damaged packages", "tech": "Tech support: bugs, crashes, login problems"}, "result": {"choice": "billing", "probabilities": {"billing": 0.9767103099166875, "shipping": 0.01507693381781696, "tech": 0.008212756265495565}, "confidence": 0.9767103099166875}, "ms": 353}, {"kind": "choose", "state": "The app crashes every time I open the settings page.", "question": "Which team should handle this customer message?", "options": {"billing": "Billing: charges, refunds, invoices", "shipping": "Shipping: delivery, lost or damaged packages", "tech": "Tech support: bugs, crashes, login problems"}, "result": {"choice": "tech", "probabilities": {"billing": 0.0582407291652671, "shipping": 0.05931008510958002, "tech": 0.882449185725153}, "confidence": 0.882449185725153}, "ms": 371}, {"kind": "choose", "state": "What is the weather tomorrow in Paris?", "question": "Which tool should be called?", "options": {"get_weather": "get_weather: forecast for a city and date", "send_email": "send_email: send an email to a contact", "create_calendar_event": "create_calendar_event: add an event to the calendar"}, "result": {"choice": "get_weather", "probabilities": {"get_weather": 0.9977329209108146, "send_email": 0.0012514958067585407, "create_calendar_event": 0.0010155832824267793}, "confidence": 0.9977329209108146}, "ms": 342}, {"kind": "yes_no", "state": "The order arrived broken. I want my money back.", "question": "Is the customer asking for a refund?", "options": null, "result": {"p_yes": 0.9960206302572099}, "ms": 237}, {"kind": "yes_no", "state": "Thanks, the replacement arrived and works great!", "question": "Is the customer asking for a refund?", "options": null, "result": {"p_yes": 0.0016186048328875886}, "ms": 237}];
+const esc=s=>String(s).replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
+const tabs=document.getElementById("tabs"),out=document.getElementById("out");
+function show(i){
+  [...tabs.children].forEach((b,j)=>b.setAttribute("aria-pressed",j===i));
+  const e=EX[i];let rows;
+  if(e.kind==="choose"){const p=e.result.probabilities;const best=e.result.choice;
+    rows=Object.keys(p).map(k=>`<div class="row${k===best?" top":""}"><span>${k===best?"<b>"+esc(e.options[k])+"</b>":esc(e.options[k])}</span><span class="bar"><i style="width:${(100*p[k]).toFixed(1)}%"></i></span><span class="num">${k===best?"<b>"+(100*p[k]).toFixed(1)+"%</b>":(100*p[k]).toFixed(1)+"%"}</span></div>`).join("");}
+  else{const y=e.result.p_yes;const top=y>=0.5;
+    rows=`<div class="row${top?" top":""}"><span>${top?"<b>yes</b>":"yes"}</span><span class="bar"><i style="width:${(100*y).toFixed(1)}%"></i></span><span class="num">${top?"<b>":""}${(100*y).toFixed(1)}%${top?"</b>":""}</span></div><div class="row${top?"":" top"}"><span>${top?"no":"<b>no</b>"}</span><span class="bar"><i style="width:${(100*(1-y)).toFixed(1)}%"></i></span><span class="num">${top?"":"<b>"}${(100*(1-y)).toFixed(1)}%${top?"":"</b>"}</span></div>`;}
+  out.innerHTML=`<div class="lbl">State</div><div>${esc(e.state)}</div><div class="lbl">Question</div><div>${esc(e.question)}</div><div class="lbl">${e.kind==="choose"?"Decision":"P(yes)"}</div>${rows}<div class="note">${e.ms} ms on a laptop CPU</div>`;
+}
+EX.forEach((e,i)=>{const b=document.createElement("button");b.textContent=e.state.length>34?e.state.slice(0,32)+"...":e.state;b.onclick=()=>show(i);tabs.appendChild(b);});
+show(0);
+</script></body></html>
