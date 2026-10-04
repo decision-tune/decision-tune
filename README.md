@@ -1,3 +1,5 @@
+<p align="center"><img src="https://decisiontune.com/brand/out/lockup.svg" alt="DecisionTune" width="360"></p>
+
 # decision-tune
 
 DecisionTune 1.0 is a 395M decision model. Give it a state, a question and options: it picks one and gives a probability for each. Or ask a yes/no question and get P(yes). One encoder pass, no text generation, runs on a laptop CPU. It scores 29.57 on Decision Index 0.2.1.

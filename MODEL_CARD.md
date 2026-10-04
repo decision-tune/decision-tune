@@ -31,6 +31,8 @@ datasets:
   - osyvokon/pavlick-formality-scores
 ---
 
+<p align="center"><img src="https://decisiontune.com/brand/out/lockup.svg" alt="DecisionTune" width="360"></p>
+
 # DecisionTune 1.0
 
 DecisionTune 1.0 is a 395M decision model. Give it a state, a question and a list of options: it picks one and gives a probability for each. Or ask a yes/no question and get P(yes). One encoder pass, no text generation. It scores 29.57 on Decision Index 0.2.1. All numbers are measured on our own runs unless marked as an estimate.
