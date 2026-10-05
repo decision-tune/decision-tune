@@ -168,8 +168,6 @@ Bold: the best number in each row.
 
 DecisionTune 0.9 Preview is our earlier clean model. It scores 25.12. Nine benchmarks score 0.0. Examples are ANLI, GPQA Diamond, ChessBench and HLE.
 
-**JevBench.** We ran its public set of 231 tasks on our computer. DecisionTune 1.0 answers 55.0% of them correctly (127 of 231, 95% CI 48.1 to 61.5). These results are for the public set only. They are not a JevBench board score.
-
 **Speed.** In the index run, the median time for one request was 25.9 ms, and p95 was 407.8 ms (our laptop). Speed on your hardware can be different.
 
 **Parity.** Torch and MLX give the same answer on 99.85% of 2,755 questions. Before each release, the package runs 50 recorded index rows again on each backend. PyTorch, ONNX and MLX each give the recorded answer on all 50.
