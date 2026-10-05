@@ -169,7 +169,7 @@ def _main(argv=None):
         check_options(args.option)  # before the model loads
     m = _load(args)
     if args.cmd == "serve":
-        return server.serve(m, args.host or "127.0.0.1", args.port, explicit_host=args.host is not None)
+        return server.serve(m, args.host or "127.0.0.1", args.port, explicit_host=args.host not in (None, "127.0.0.1", "localhost", "::1"))
     out = decide(m, args.state, args.question, args.option)
     if args.json:
         print(json.dumps(out, indent=2))

@@ -109,9 +109,11 @@ def test_serve_wiring(env, monkeypatch):
     monkeypatch.setattr(server, "serve", fake_serve(env))
     cli.main(["serve"])
     cli.main(["serve", "--host", "0.0.0.0", "--port", "9000"])
+    cli.main(["serve", "--host", "127.0.0.1"])  # loopback keeps the Host check (DNS rebinding)
     s = [c for c in env if c[0] == "serve"]
     assert s[0][2:] == ("127.0.0.1", 8000, False, False)
     assert s[1][2:] == ("0.0.0.0", 9000, True, False)
+    assert s[2][2:] == ("127.0.0.1", 8000, False, False)
 
 
 def test_app_opens_browser_after_model_load_and_bind(real_bind):
