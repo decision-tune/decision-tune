@@ -3,11 +3,12 @@ import errno
 import json
 import os
 import sys
+import tempfile
 import time
 from pathlib import Path
 
 from . import __version__, mcp, server
-from .engine import BACKENDS, FILES, pick_backend
+from .engine import BACKENDS
 from .hub import REPO, DecisionModel, resolve
 from .recipe import BUILTIN, NAME_RE, Recipe, list_recipes, read_rows, recipes_dir, write_csv, write_xlsx
 from .server import decide
@@ -17,33 +18,21 @@ def _load(args):
     return DecisionModel.from_pretrained(args.model, backend=args.backend, device=args.device, yes=args.yes)
 
 
-def _cached(model, backend):
-    """True if the model is a local directory or already in the Hugging Face cache (never downloads, never prompts)."""
-    if os.path.isdir(os.path.expanduser(model)):
-        return True
-    from huggingface_hub import snapshot_download
-
-    want = ["manifest.json", *FILES[pick_backend(backend)]]
-    try:
-        return all(os.path.isfile(os.path.join(snapshot_download(model, allow_patterns=want, local_files_only=True), f)) for f in want)
-    except Exception:
-        return False
-
-
 def _mcp_model(args):
-    yes = args.yes or os.environ.get("DECISION_TUNE_YES") == "1"
-    if not yes and not _cached(args.model, args.backend):
-        raise RuntimeError("Run `decisiontune download` first.")  # a prompt would read the protocol's stdin
-    return DecisionModel.from_pretrained(args.model, backend=args.backend, yes=True)
+    yes = (args.yes or os.environ.get("DECISION_TUNE_YES") == "1") or None  # None: the loader downloads only if cached or consented
+    try:
+        return DecisionModel.from_pretrained(args.model, backend=args.backend, yes=yes)
+    except RuntimeError as e:
+        if "not downloaded yet" in str(e):  # hub._confirm refused: stdin is the protocol, there is nobody to ask
+            raise RuntimeError("Run `decisiontune download` first.") from e
+        raise
 
 
 def _app(args):
     m = _load(args)  # load first: the page the browser opens must be able to answer
     for port in range(args.port, args.port + 11):
         try:
-            if port != args.port:
-                print(f"decision-tune: port {args.port} is busy, using {port}", file=sys.stderr)
-            return server.serve(m, "127.0.0.1", port, False, open_browser=not args.no_browser)  # opens the page once the port is bound
+            return server.serve(m, "127.0.0.1", port, False, open_browser=not args.no_browser)  # prints the bound URL, then opens the page
         except OSError as e:
             if e.errno != errno.EADDRINUSE:
                 raise
@@ -54,9 +43,11 @@ def _run(args):
     inp = Path(os.path.expanduser(args.input))
     if not inp.exists():
         raise ValueError(f"no such input: {args.input}")
-    out = Path(os.path.expanduser(args.output)) if args.output else inp.parent / f"{inp.resolve().name if inp.is_dir() else inp.stem}-decided.csv"
-    if out.exists() and not args.force:
-        raise ValueError(f"{out} already exists: pass --force to replace it, or -o for another name")
+    base = inp.resolve() if inp.is_dir() else inp  # "." and ".." have no name of their own
+    out = Path(os.path.expanduser(args.output)) if args.output else base.parent / f"{base.name if inp.is_dir() else base.stem}-decided.csv"
+    exists = ValueError(f"{out} already exists: pass --force to replace it, or -o for another name")
+    if os.path.lexists(out) and not args.force:  # lexists: a dangling symlink counts
+        raise exists
     recipe = Recipe.load(args.recipe)
     cols, rows = read_rows(inp)
     missing = [c for c in recipe.read if c not in cols]
@@ -67,10 +58,25 @@ def _run(args):
     t = time.perf_counter()
     res = recipe.run(rows, model=m, progress=step)
     ms = (time.perf_counter() - t) * 1000
-    tmp = out.with_name(f".{out.name}.tmp")  # a failed write must not truncate an existing file
+    fd, name = tempfile.mkstemp(dir=out.parent, prefix=f".{out.name}.", suffix=".tmp")  # exclusive and unique: never a file that was already there
+    os.close(fd)
+    tmp = Path(name)
     try:
         (write_xlsx if out.suffix.lower() == ".xlsx" else write_csv)(tmp, recipe.output_columns(cols), res)
-        os.replace(tmp, out)
+        mask = os.umask(0)
+        os.umask(mask)
+        os.chmod(tmp, 0o666 & ~mask)  # mkstemp makes it 0600; a result file gets the usual permissions
+        if args.force:
+            os.replace(tmp, out)
+        else:
+            try:
+                os.link(tmp, out)  # fails atomically if out appeared since the check, dangling symlink included
+            except FileExistsError:
+                raise exists
+            except OSError:  # no hard links on this filesystem: best effort, a narrow race remains
+                if os.path.lexists(out):
+                    raise exists
+                os.replace(tmp, out)
     finally:
         tmp.unlink(missing_ok=True)
     failed = sum(1 for r in res if "error" in r)
@@ -126,7 +132,7 @@ def _main(argv=None):
     s.add_argument("--device", default=None)
     common(s)
     p = sub.add_parser("app", help="open the DecisionTune app in your browser")
-    p.add_argument("--port", type=int, default=8000, help="first port to try (default 8000; the next 10 are tried if busy)")
+    p.add_argument("--port", type=int, default=8000, help="first port to try (default 8000); tries the next 10 ports if it is busy")
     p.add_argument("--no-browser", action="store_true", help="do not open the browser")
     p.add_argument("--device", default=None)
     common(p)

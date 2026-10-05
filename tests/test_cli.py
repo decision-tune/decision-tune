@@ -3,6 +3,9 @@ import errno
 import json
 import os
 import shutil
+import socket
+import sys
+import urllib.parse
 
 import pytest
 
@@ -33,8 +36,9 @@ def env(tmp_path, monkeypatch):
     calls = []
 
     def fake_load(cls, repo_or_dir="x", **kw):
-        calls.append(("from_pretrained", repo_or_dir, kw))
-        return Fake()
+        m = Fake()
+        calls.append(("from_pretrained", repo_or_dir, kw, m))
+        return m
 
     monkeypatch.setattr(DecisionModel, "from_pretrained", classmethod(fake_load))
     monkeypatch.setattr(server.webbrowser, "open", lambda url: calls.append(("browser", url)))
@@ -49,6 +53,45 @@ def fake_serve(calls, fail_ports=()):
         if open_browser:
             server.webbrowser.open(f"http://{host}:{port}/")
     return serve
+
+
+def free_ports(n):
+    """First of n consecutive loopback ports that are free right now."""
+    for _ in range(100):
+        with socket.socket() as probe:
+            probe.bind(("127.0.0.1", 0))
+            p = probe.getsockname()[1]
+        socks = [socket.socket() for _ in range(n)]
+        try:
+            for i, s in enumerate(socks):
+                s.bind(("127.0.0.1", p + i))
+            return p
+        except OSError:
+            pass
+        finally:
+            for s in socks:
+                s.close()
+    raise RuntimeError("no free port run")
+
+
+@pytest.fixture
+def real_bind(env, monkeypatch):
+    """Real server.serve on real sockets. Only serve_forever is replaced (it returns at once); the browser stub must find the port accepting."""
+    orig = server.make_server
+
+    def make(model, host="127.0.0.1", port=8000, explicit_host=False):
+        s = orig(model, host, port, explicit_host)  # a busy port raises EADDRINUSE here, as in production
+        env.append(("bound", model, s.server_address[1]))
+        s.serve_forever = lambda: None
+        return s
+
+    def browser(url):
+        with socket.create_connection(("127.0.0.1", urllib.parse.urlparse(url).port), timeout=2):  # refused if nothing is listening
+            env.append(("browser", url))
+
+    monkeypatch.setattr(server, "make_server", make)
+    monkeypatch.setattr(server.webbrowser, "open", browser)
+    return env
 
 
 def test_ask_output_unchanged(env, capsys):
@@ -71,25 +114,57 @@ def test_serve_wiring(env, monkeypatch):
     assert s[1][2:] == ("0.0.0.0", 9000, True, False)
 
 
-def test_app_opens_browser_after_model_load(env, monkeypatch):
-    monkeypatch.setattr(server, "serve", fake_serve(env))
-    cli.main(["app", "--port", "8123"])
-    names = [c[0] for c in env]
-    assert names.index("from_pretrained") < names.index("browser")
-    serve = next(c for c in env if c[0] == "serve")
-    assert isinstance(serve[1], Fake) and serve[3] == 8123 and serve[5] is True
-    assert next(c for c in env if c[0] == "browser")[1] == "http://127.0.0.1:8123/"
+def test_app_opens_browser_after_model_load_and_bind(real_bind):
+    port = free_ports(1)
+    cli.main(["app", "--port", str(port)])
+    names = [c[0] for c in real_bind]
+    assert names == ["from_pretrained", "bound", "browser"]
+    loaded = real_bind[0][3]
+    assert real_bind[1][1] is loaded and real_bind[1][2] == port  # the served model is the one that was loaded
+    assert real_bind[2][1] == f"http://127.0.0.1:{port}/"
 
 
-def test_app_no_browser_and_busy_port(env, monkeypatch, capsys):
-    monkeypatch.setattr(server, "serve", fake_serve(env, fail_ports=(8000, 8001)))
-    cli.main(["app", "--no-browser"])
-    assert [c[3] for c in env if c[0] == "serve"] == [8000, 8001, 8002]
-    assert not any(c[0] == "browser" for c in env) and all(c[5] is False for c in env if c[0] == "serve")
-    assert "port 8000 is busy, using 8001" in capsys.readouterr().err
+def test_app_browser_is_not_opened_when_nothing_is_listening(env, monkeypatch):
+    def never_started(model, host="127.0.0.1", port=8000, explicit_host=False, open_browser=False):
+        server.webbrowser.open(f"http://{host}:{port}/")  # what a serve that skipped the bind would do
+
+    monkeypatch.setattr(server, "serve", never_started)
+    port = free_ports(1)
+    monkeypatch.setattr(server.webbrowser, "open", lambda url: socket.create_connection(("127.0.0.1", port), timeout=2).close())
+    with pytest.raises(OSError):  # the pin: this fake fails the same readiness check the real-server test applies
+        cli.main(["app", "--port", str(port)])
+
+
+def test_app_busy_ports_announce_only_the_bound_one(real_bind, capsys):
+    p = free_ports(3)
+    held = [socket.socket() for _ in range(2)]
+    try:
+        for i, s in enumerate(held):
+            s.bind(("127.0.0.1", p + i))
+            s.listen()
+        cli.main(["app", "--no-browser", "--port", str(p)])
+    finally:
+        for s in held:
+            s.close()
+    cap = capsys.readouterr()
+    assert [c[2] for c in real_bind if c[0] == "bound"] == [p + 2]
+    assert f"on http://127.0.0.1:{p + 2}/" in cap.out
+    assert "using" not in cap.err and "busy" not in cap.err  # nothing claims a port before it is bound
+    assert not any(c[0] == "browser" for c in real_bind)
+
+
+def test_app_exhausted_ports(env, monkeypatch, capsys):
     monkeypatch.setattr(server, "serve", fake_serve(env, fail_ports=range(8000, 8011)))
     with pytest.raises(SystemExit, match="all busy"):
         cli.main(["app", "--no-browser"])
+    assert [c[3] for c in env if c[0] == "serve"] == list(range(8000, 8011))
+    assert "using" not in capsys.readouterr().err
+
+
+def test_app_help_says_next_10_ports(capsys):
+    with pytest.raises(SystemExit):
+        cli.main(["app", "--help"])
+    assert "tries the next 10 ports" in " ".join(capsys.readouterr().out.split())
 
 
 def test_run_writes_default_output_and_refuses_overwrite(env, tmp_path, capsys):
@@ -106,6 +181,88 @@ def test_run_writes_default_output_and_refuses_overwrite(env, tmp_path, capsys):
     assert out.read_bytes() == before
     cli.main(["run", "support-triage", str(src), "--force"])
     assert not list(tmp_path.glob(".*.tmp"))
+
+
+def run_csv(tmp_path, *extra, out="o.csv"):
+    cli.main(["run", "support-triage", DATA, "-o", str(tmp_path / out), *extra])
+
+
+def test_run_folder_dot_and_dotdot_write_beside_the_folder(env, tmp_path, monkeypatch):
+    d = tmp_path / "notes"
+    (d / "sub").mkdir(parents=True)
+    (d / "a.txt").write_text("hello")
+    (d / "sub" / "b.txt").write_text("hi")
+    r = tmp_path / "r.json"
+    r.write_text(json.dumps({"name": "t", "read": ["text"], "questions": [{"name": "q", "type": "yes_no", "question": "Greeting?"}]}))
+    monkeypatch.chdir(d)
+    cli.main(["run", str(r), "."])
+    assert (tmp_path / "notes-decided.csv").exists() and not (d / "-decided.csv").exists() and not list(d.glob("*-decided.csv"))
+    (tmp_path / "notes-decided.csv").unlink()
+    (d / "a.txt").unlink()  # the .. run reads sub/ only
+    monkeypatch.chdir(d / "sub")
+    cli.main(["run", str(r), ".."])
+    assert (tmp_path / "notes-decided.csv").exists() and not list((d / "sub").glob("*-decided.csv"))
+
+
+def test_run_output_created_during_the_run_is_not_overwritten(env, tmp_path, monkeypatch):
+    out = tmp_path / "o.csv"
+
+    def late(self, state, question):
+        out.write_text("someone else's file")  # appears after the early existence check, before publish
+        return 0.9
+
+    monkeypatch.setattr(Fake, "yes_no", late)
+    with pytest.raises(SystemExit, match="already exists"):
+        run_csv(tmp_path)
+    assert out.read_text() == "someone else's file"
+    assert not [p for p in tmp_path.iterdir() if p != out]  # our temp file is gone, nothing else was touched
+    run_csv(tmp_path, "--force")
+    assert out.read_text(encoding="utf-8-sig").startswith("subject")
+
+
+def test_run_dangling_symlink_output_is_refused_unless_forced(env, tmp_path):
+    target = tmp_path / "elsewhere.csv"
+    out = tmp_path / "o.csv"
+    out.symlink_to(target)
+    with pytest.raises(SystemExit, match="already exists"):
+        run_csv(tmp_path)
+    assert out.is_symlink() and os.readlink(out) == str(target) and not target.exists()
+    run_csv(tmp_path, "--force")
+    assert not out.is_symlink() and out.is_file() and not target.exists()  # the link itself was replaced, its target never written
+
+
+def test_run_leaves_other_files_named_like_a_temp_alone(env, tmp_path):
+    keep = tmp_path / ".o.csv.tmp"
+    keep.write_text("mine")
+    run_csv(tmp_path)
+    run_csv(tmp_path, "--force")
+    assert keep.read_text() == "mine"
+    assert sorted(p.name for p in tmp_path.iterdir()) == [".o.csv.tmp", "o.csv"]
+
+
+def test_run_without_hard_links_still_refuses_and_forces(env, tmp_path, monkeypatch):
+    def no_link(*a, **k):
+        raise OSError(errno.EPERM, "links not supported")
+
+    monkeypatch.setattr(os, "link", no_link)
+    run_csv(tmp_path)
+    (tmp_path / "o.csv").write_text("keep")
+    with pytest.raises(SystemExit, match="already exists"):
+        run_csv(tmp_path)
+    (tmp_path / "x.csv").symlink_to(tmp_path / "gone")
+    with pytest.raises(SystemExit, match="already exists"):
+        run_csv(tmp_path, out="x.csv")
+    assert (tmp_path / "o.csv").read_text() == "keep"
+    run_csv(tmp_path, "--force")
+    assert (tmp_path / "o.csv").read_text(encoding="utf-8-sig").startswith("subject")
+    assert sorted(p.name for p in tmp_path.iterdir()) == ["o.csv", "x.csv"]
+
+
+def test_run_output_keeps_normal_file_permissions(env, tmp_path):
+    run_csv(tmp_path)
+    mask = os.umask(0)
+    os.umask(mask)
+    assert (tmp_path / "o.csv").stat().st_mode & 0o777 == 0o666 & ~mask
 
 
 def test_run_cli_uses_recipe_answers(env, tmp_path):
@@ -155,28 +312,38 @@ def test_recipes_and_recipe_commands(env, tmp_path, capsys):
 def test_mcp_wiring_and_consent(env, monkeypatch):
     seen = []
     monkeypatch.setattr(mcp, "run_stdio", lambda factory: seen.append(factory))
-    monkeypatch.setattr(cli, "_cached", lambda model, backend: False)
     cli.main(["mcp"])
-    with pytest.raises(RuntimeError, match="Run `decisiontune download` first."):
-        seen[-1]()
-    assert not env  # no download, no load
+    assert isinstance(seen[-1](), Fake) and env[-1][2]["yes"] is None  # no consent given: the loader must not be told yes
     cli.main(["mcp", "--yes"])
-    assert isinstance(seen[-1](), Fake) and env[-1][2]["yes"] is True
+    seen[-1]()
+    assert env[-1][2]["yes"] is True
     monkeypatch.setenv("DECISION_TUNE_YES", "1")
     cli.main(["mcp"])
-    assert isinstance(seen[-1](), Fake)
-    monkeypatch.delenv("DECISION_TUNE_YES")
-    monkeypatch.setattr(cli, "_cached", lambda model, backend: True)
+    seen[-1]()
+    assert env[-1][2]["yes"] is True
+    monkeypatch.setenv("DECISION_TUNE_YES", "0")
     cli.main(["mcp"])
-    assert isinstance(seen[-1](), Fake)
+    seen[-1]()
+    assert env[-1][2]["yes"] is None
 
 
-def test_mcp_missing_model_is_a_tool_error(env, monkeypatch):
+def test_mcp_uncached_model_without_consent_is_a_tool_error(tmp_path, monkeypatch):
+    """The real loader, no fakes: nothing cached, stdin not a terminal, no consent -> no download, a tool error that names the fix."""
     import io
 
-    monkeypatch.setattr(cli, "_cached", lambda model, backend: False)
+    monkeypatch.delenv("DECISION_TUNE_YES", raising=False)
+    monkeypatch.setattr(sys, "stdin", io.StringIO(""))
+    import huggingface_hub
+
+    def no_network(*a, **k):
+        if not k.get("local_files_only"):
+            raise AssertionError("tried to download without consent")
+        raise FileNotFoundError("not cached")
+
+    monkeypatch.setattr(huggingface_hub, "snapshot_download", no_network)
+    args = type("A", (), {"yes": False, "model": "decision-tune/not-cached-here", "backend": "auto"})()
     req = {"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {"name": "decide", "arguments": {"state": "x", "question": "ok?"}}}
     out = io.StringIO()
-    mcp.run_stdio(lambda: cli._mcp_model(type("A", (), {"yes": False, "model": "m", "backend": "auto"})()), io.StringIO(json.dumps(req) + "\n"), out)
+    mcp.run_stdio(lambda: cli._mcp_model(args), io.StringIO(json.dumps(req) + "\n"), out)
     res = json.loads(out.getvalue())["result"]
     assert res["isError"] and "Run `decisiontune download` first." in res["content"][0]["text"]
