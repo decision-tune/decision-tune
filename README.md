@@ -35,6 +35,32 @@ docker run --rm -p 8000:8000 -v dt-cache:/root/.cache/huggingface ghcr.io/decisi
 
 The MLX backend uses laya-mlx (Apache-2.0).
 
+## Quick start (no code)
+
+1. Open Terminal.
+2. Install DecisionTune. Paste this line:
+
+   ```bash
+   curl -LsSf https://decisiontune.com/install.sh | sh
+   ```
+
+   Or install it yourself. On a Mac with Apple silicon, use one of these:
+
+   ```bash
+   uv tool install "decision-tune[mlx]"
+   pip install "decision-tune[mlx]"
+   ```
+
+3. Start the app:
+
+   ```bash
+   decisiontune app
+   ```
+
+The app opens in your browser. The first time, it asks before it downloads the model (1.58 GB). Everything runs on your computer. On a Mac, a short decision takes about 10 ms.
+
+Both command names work: `decision-tune` and `decisiontune`. This page uses `decisiontune` in the new sections.
+
 ## Python
 
 > [!TIP]
@@ -73,15 +99,92 @@ decision-tune download --yes     # download without a prompt (or set DECISION_TU
 
 `--backend auto|torch|mlx|onnx` selects the backend. `auto` selects MLX on Apple silicon if MLX is installed. If not, it selects PyTorch. `--json` prints JSON.
 
+## Run on many items (recipes)
+
+A recipe is a small JSON file. It lists the columns to read, the questions to ask, and when to flag a row for a person. The same recipe works in the app, on the command line, over HTTP, in MCP and in Python. `support-triage` is built in. It has three questions (team, refund, tone). This is the first one:
+
+```json
+{
+  "name": "support-triage",
+  "read": ["subject", "message"],
+  "questions": [
+    {"name": "team", "type": "choose", "question": "Which team should handle this customer message?",
+     "options": {"billing": "Billing: charges, refunds, invoices",
+                 "shipping": "Shipping: delivery, lost or damaged packages",
+                 "tech": "Tech support: bugs, crashes, login problems"}}
+  ],
+  "review_below": 0.6
+}
+```
+
+Question types: `choose` (needs `options`), `yes_no`, and `scale` (needs `levels`, answers as key and description).
+
+Run a recipe on a `.csv` or `.xlsx` file, or on a folder of `.txt` and `.md` files:
+
+```bash
+decisiontune run support-triage tickets.csv                  # writes tickets-decided.csv
+decisiontune run support-triage tickets.csv -o answers.xlsx  # .xlsx output; add --force to replace a file
+decisiontune recipes                                         # list the recipes
+decisiontune recipe show support-triage                      # print a recipe as JSON
+decisiontune recipe new my-recipe                            # save a copy in ~/.decision-tune/recipes to edit
+```
+
+Your CSV needs the columns that the recipe reads (`subject` and `message` here). A folder of text files gives the columns `file` and `text`.
+
+In Python:
+
+```python
+from decision_tune import Recipe
+
+rows = [{"subject": "Broken mug", "message": "The order arrived broken. I want my money back."}]
+results = Recipe.load("support-triage").run(rows)   # one dict per row
+```
+
+**Output columns.** Each result row has your input columns, then these:
+
+- `team`, `refund`, `tone`: the answers (one column per question).
+- `team_confidence`, `refund_confidence`, `tone_confidence`: the probability of each answer. A yes/no question also has `refund_p_yes`.
+- `needs_review`: set when any confidence is below `review_below`, or when the row failed. A person should check these rows.
+- `error`: the reason, if one row failed. The run goes on with the next row.
+
+**Formula guard.** Spreadsheets run text that starts with `=`, `+`, `-` or `@`. DecisionTune puts an apostrophe in front of such a cell in the `.csv` and `.xlsx` output. A cell cannot run as a formula.
+
+## Claude Desktop, Cursor and other MCP clients
+
+DecisionTune runs as an MCP server on your computer. Download the model once: `decisiontune download`. Then add this to the MCP settings of your client:
+
+```json
+{
+  "mcpServers": {
+    "decisiontune": {"command": "decisiontune", "args": ["mcp"]}
+  }
+}
+```
+
+If the client cannot find the command, give the full path (`which decisiontune` shows it). Restart the client. It shows three tools:
+
+- `decide`: pick one option, or answer yes/no, about a piece of text.
+- `run_recipe`: run a recipe on a file, a folder, or rows that you pass in. It can save all result rows to a `.csv` or `.xlsx` file. It replaces an existing file only if the name ends with `-decided.csv` or `-decided.xlsx`.
+- `list_recipes`: list the recipes.
+
 ## Local HTTP endpoint
 
 ```bash
-decision-tune serve              # http://127.0.0.1:8000/decide
-curl -s http://127.0.0.1:8000/decide -d '{"state": "What is the weather tomorrow in Paris?", "question": "Which tool should be called?", "options": ["get_weather", "send_email", "create_calendar_event"]}'
-curl -s http://127.0.0.1:8000/decide -d '{"state": "The order arrived broken. I want my money back.", "question": "Is the customer asking for a refund?"}'
+decision-tune serve              # app: http://127.0.0.1:8000/   endpoint: http://127.0.0.1:8000/decide
+curl -s http://127.0.0.1:8000/decide -H 'Content-Type: application/json' -d '{"state": "What is the weather tomorrow in Paris?", "question": "Which tool should be called?", "options": ["get_weather", "send_email", "create_calendar_event"]}'
+curl -s http://127.0.0.1:8000/decide -H 'Content-Type: application/json' -d '{"state": "The order arrived broken. I want my money back.", "question": "Is the customer asking for a refund?"}'
 ```
 
-It answers one request at a time. By default, it listens only on localhost.
+Send `Content-Type: application/json` with every POST. The server also serves the app at `http://127.0.0.1:8000/`. To open the app in your browser, run `decisiontune app` (it tries the next 10 ports if 8000 is busy).
+
+To run a recipe, POST rows as JSON to `/recipes/<name>/run`. To send a CSV text body, use `Content-Type: text/csv`:
+
+```bash
+curl -s http://127.0.0.1:8000/recipes/support-triage/run -H 'Content-Type: application/json' -d '{"rows": [{"subject": "Broken mug", "message": "The order arrived broken. I want my money back."}]}'
+curl -s http://127.0.0.1:8000/recipes/support-triage/run -H 'Content-Type: text/csv' --data-binary @tickets.csv
+```
+
+The reply has `columns`, `rows`, `count`, `needs_review`, `failed` and `ms`. The server runs one model call at a time. By default, it listens only on localhost.
 
 ## Behavior
 

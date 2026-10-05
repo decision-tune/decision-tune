@@ -90,9 +90,42 @@ decision-tune download --yes     # download without a prompt, for scripts and co
 
 ```bash
 decision-tune serve              # http://127.0.0.1:8000/decide
-curl -s http://127.0.0.1:8000/decide -d '{"state": "What is the weather tomorrow in Paris?", "question": "Which tool should be called?", "options": ["get_weather", "send_email", "create_calendar_event"]}'
-curl -s http://127.0.0.1:8000/decide -d '{"state": "The order arrived broken. I want my money back.", "question": "Is the customer asking for a refund?"}'
+curl -s http://127.0.0.1:8000/decide -H 'Content-Type: application/json' -d '{"state": "What is the weather tomorrow in Paris?", "question": "Which tool should be called?", "options": ["get_weather", "send_email", "create_calendar_event"]}'
+curl -s http://127.0.0.1:8000/decide -H 'Content-Type: application/json' -d '{"state": "The order arrived broken. I want my money back.", "question": "Is the customer asking for a refund?"}'
 ```
+
+**Local app.** Both command names work: `decision-tune` and `decisiontune`.
+
+```bash
+curl -LsSf https://decisiontune.com/install.sh | sh      # or: uv tool install "decision-tune[mlx]" on a Mac
+decisiontune app                                         # opens the app in your browser
+```
+
+The app runs on your computer. Nothing leaves it. On a Mac with MLX, a short decision takes about 10 ms. If port 8000 is busy, the app tries the next 10 ports.
+
+**Recipes (many items at once).** A recipe is a JSON file with the columns to read and the questions to ask. `support-triage` is built in. Each result row gets `needs_review` when a confidence is below `review_below`. The `.csv` and `.xlsx` output puts an apostrophe before any cell that starts with `=`, `+`, `-` or `@`.
+
+```bash
+decisiontune run support-triage tickets.csv      # writes tickets-decided.csv; use -o out.xlsx for Excel
+decisiontune recipes                             # list the recipes
+decisiontune recipe new my-recipe                # save a copy to edit
+```
+
+```python
+from decision_tune import Recipe
+
+results = Recipe.load("support-triage").run([{"subject": "Broken mug", "message": "The order arrived broken."}])
+```
+
+Over HTTP, POST rows to `/recipes/support-triage/run` with `Content-Type: application/json`.
+
+**MCP (Claude Desktop, Cursor and others).** Run `decisiontune download` once. Then add this to your client settings:
+
+```json
+{"mcpServers": {"decisiontune": {"command": "decisiontune", "args": ["mcp"]}}}
+```
+
+The server has three tools: `decide`, `run_recipe` and `list_recipes`. It runs on your computer.
 
 **Backends.** PyTorch is the default. On Apple silicon, `pip install "decision-tune[mlx]"` adds an MLX backend. The package selects it automatically. The MLX backend uses laya-mlx (Apache-2.0). `pip install "decision-tune[onnx]"` adds onnxruntime. To use it, set `--backend onnx` or `backend="onnx"`. All three backends read the files in this repo. They give the same answers on our parity rows.
 
