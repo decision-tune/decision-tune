@@ -36,7 +36,7 @@ datasets:
 
 <p align="center"><img src="https://img.shields.io/badge/Decision%20Index%200.2.1-29.57-da3200?style=flat-square" style="display:inline-block;vertical-align:middle;margin:2px" alt="Decision Index 0.2.1: 29.57"> <img src="https://img.shields.io/badge/size-395M-151b24?style=flat-square" style="display:inline-block;vertical-align:middle;margin:2px" alt="395M parameters"> <img src="https://img.shields.io/badge/license-Apache--2.0-151b24?style=flat-square" style="display:inline-block;vertical-align:middle;margin:2px" alt="Apache-2.0"> <img src="https://img.shields.io/badge/runs%20on-PyTorch%20%7C%20MLX%20%7C%20ONNX-4f5661?style=flat-square" style="display:inline-block;vertical-align:middle;margin:2px" alt="PyTorch, MLX, ONNX"></p>
 
-<p align="center"><b><a href="https://decisiontune.com">Website</a> &nbsp;•&nbsp; <a href="https://huggingface.co/spaces/decision-tune/demo">Demo</a> &nbsp;•&nbsp; <a href="https://github.com/decision-tune/decision-tune">GitHub</a> &nbsp;•&nbsp; <a href="https://pypi.org/project/decision-tune/">PyPI</a></b></p>
+<p align="center"><b><a href="https://decisiontune.com?utm_source=huggingface&utm_medium=referral&utm_campaign=launch">Website</a> &nbsp;•&nbsp; <a href="https://huggingface.co/spaces/decision-tune/demo">Demo</a> &nbsp;•&nbsp; <a href="https://github.com/decision-tune/decision-tune">GitHub</a> &nbsp;•&nbsp; <a href="https://pypi.org/project/decision-tune/">PyPI</a></b></p>
 
 # DecisionTune 1.0
 
@@ -51,7 +51,7 @@ DecisionTune 1.0 is a 395M decision model. You give it a state, a question and a
 
 <p align="center"><img src="https://huggingface.co/decision-tune/decisiontune-1.0/resolve/main/assets/example-decision.png" alt="Real output of DecisionTune 1.0: for the state 'The order arrived broken.' it picks Shipping at 71.2 percent, over Tech support at 20.9 and Billing at 7.9. Recorded on a laptop CPU in 361 ms." width="680"></p>
 
-Weights: Apache-2.0. Package: [`decision-tune`](https://pypi.org/project/decision-tune/) ([source](https://github.com/decision-tune/decision-tune)). Demo: [decision-tune/demo](https://huggingface.co/spaces/decision-tune/demo). Site: [decisiontune.com](https://decisiontune.com).
+Weights: Apache-2.0. Package: [`decision-tune`](https://pypi.org/project/decision-tune/) ([source](https://github.com/decision-tune/decision-tune)). Demo: [decision-tune/demo](https://huggingface.co/spaces/decision-tune/demo). Site: [decisiontune.com](https://decisiontune.com?utm_source=huggingface&utm_medium=referral&utm_campaign=launch).
 
 ## How to use
 
