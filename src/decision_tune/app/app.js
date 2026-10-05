@@ -139,8 +139,9 @@ loadExample(0);
 
 // ---- 2. Run on many items
 let src = null;          // {input, label, preview}
-let wantedRead = [];     // columns a loaded recipe asked for
+let wantedRead = null;   // columns a loaded recipe asked for: null = no recipe loaded, [] = all columns (as the recipe format says)
 let savedName = "";
+let savedKey = "";       // the definition (read, questions, threshold) as it was last loaded or saved
 let last = null;         // {out, recipe}
 let filter = "all";
 let srcToken = 0;
@@ -153,29 +154,37 @@ function renderCols(skip) {
   const box = $("cols");
   if (!src) { box.replaceChildren(h("span", { class: "soft" }, "Add your items first.")); return; }
   const p = src.preview;
-  const wanted = wantedRead.filter((c) => p.columns.includes(c));
+  const wanted = (wantedRead || []).filter((c) => p.columns.includes(c));
   box.replaceChildren(...p.columns.map((c) => {
-    const on = wanted.length ? wanted.includes(c) : p.text.includes(c) && !(skip || []).includes(c);
+    const on = wantedRead && !wantedRead.length ? true : wanted.length ? wanted.includes(c) : p.text.includes(c) && !(skip || []).includes(c);
     const cb = h("input", { type: "checkbox", value: c });
     cb.checked = on;
     return h("label", null, cb, c);
   }));
+  renderUse();
 }
 const checkedCols = () => [...document.querySelectorAll("#cols input:checked")].map((i) => i.value);
 
+// Forget the current items at once, cancel any preview still in flight, and keep Run off until a new source is ready.
+function dropSource() {
+  ++srcToken;
+  src = null;
+  renderCols();
+  $("runbtn").disabled = true;
+}
 async function setSource(input, name, skip) {
-  const token = ++srcToken;
+  dropSource();
+  const token = srcToken;
   srcInfo("Reading " + name + "...");
   try {
     const preview = await postJSON("/api/preview", { input });
     if (token !== srcToken) return;
     src = { input, label: name, preview, skip };
     renderCols(skip);
+    $("runbtn").disabled = false;
     srcInfo(`${name} · ${preview.count} rows · stays on this computer`);
   } catch (e) {
     if (token !== srcToken) return;
-    src = null;
-    renderCols();
     srcInfo(e.message, true);
   }
 }
@@ -194,25 +203,26 @@ function toBase64(buf) {
 $("f-sheet").addEventListener("change", async (ev) => {
   const f = ev.target.files[0];
   if (!f) return;
+  dropSource();  // before the awaits: the old items must not stay runnable while the file is read
   const ext = f.name.toLowerCase().split(".").pop();
   if (ext === "csv") setSource({ type: "csv", data: await f.text() }, f.name);
   else if (ext === "xlsx") setSource({ type: "xlsx", data: toBase64(await f.arrayBuffer()) }, f.name);
-  else { src = null; renderCols(); srcInfo("Use a .csv or .xlsx file.", true); }
+  else srcInfo("Use a .csv or .xlsx file.", true);
 });
 $("f-folder").addEventListener("change", async (ev) => {
+  dropSource();
   const files = [...ev.target.files].filter((f) => /\.(txt|md)$/i.test(f.name)).sort((a, b) => a.name.localeCompare(b.name));
-  if (!files.length) { src = null; renderCols(); srcInfo("No .txt or .md files in that folder.", true); return; }
+  if (!files.length) { srcInfo("No .txt or .md files in that folder.", true); return; }
   const rows = await Promise.all(files.map(async (f) => ({ file: f.name, text: await f.text() })));
   setSource({ type: "rows", data: rows }, "Folder", ["file"]);
 });
 let pasteTimer = 0;
 $("paste").addEventListener("input", () => {
   clearTimeout(pasteTimer);
-  pasteTimer = setTimeout(() => {
-    const text = $("paste").value;
-    if (text.trim()) setSource({ type: "lines", data: text }, "Pasted list");
-    else { src = null; renderCols(); srcInfo("No items yet. Files stay on this computer."); }
-  }, 300);
+  dropSource();  // every edit invalidates the items at once, including a preview that is still on its way
+  const text = $("paste").value;
+  if (!text.trim()) { srcInfo("No items yet. Files stay on this computer."); return; }
+  pasteTimer = setTimeout(() => setSource({ type: "lines", data: text }, "Pasted list"), 300);
 });
 
 const SAMPLE = [
@@ -231,10 +241,11 @@ $("sample").addEventListener("click", async () => {
 });
 
 // questions
-function parseChoices(text) {
+// kind: "list" or "dict" when the question was loaded (kept as it was), "auto" for a new one (colons mean key: description).
+function parseChoices(text, kind) {
   const lines = text.split("\n").map((s) => s.trim()).filter(Boolean);
-  if (!lines.some((l) => l.includes(":"))) return lines;
-  const o = {};
+  if (kind === "list" || (kind !== "dict" && !lines.some((l) => l.includes(":")))) return lines;
+  const o = Object.create(null);  // a plain {} would drop a "__proto__" key
   for (const l of lines) {
     const i = l.indexOf(":");
     o[i < 0 ? l : l.slice(0, i).trim()] = i < 0 ? l : l.slice(i + 1).trim();
@@ -263,24 +274,25 @@ function addQuestion(q) {
   text.value = q.question;
   area.value = choicesText(q.type === "scale" ? q.levels : q.options);
   sync();
-  card.q = { name, type, text, area };
+  const given = q.type === "scale" ? q.levels : q.options;
+  card.q = { name, type, text, area, kind: Array.isArray(given) ? "list" : given ? "dict" : "auto" };
   $("qs").append(card);
 }
 $("addq").addEventListener("click", () => addQuestion());
 
 function questions() {
   return [...document.querySelectorAll("#qs .q")].map((c) => {
-    const { name, type, text, area } = c.q;
+    const { name, type, text, area, kind } = c.q;
     const q = { name: name.value.trim(), type: type.value, question: text.value.trim() };
-    if (q.type === "choose") q.options = parseChoices(area.value);
-    if (q.type === "scale") q.levels = parseChoices(area.value);
+    if (q.type === "choose") q.options = parseChoices(area.value, kind);
+    if (q.type === "scale") q.levels = parseChoices(area.value, kind);
     return q;
   });
 }
 function buildRecipe(forSave) {
   const name = $("rname").value.trim();
   const thr = Number($("thr").value);
-  const read = src ? checkedCols() : wantedRead;
+  const read = src ? checkedCols() : wantedRead || [];
   if (!forSave && !src) throw new Error("Add your items first (step 1).");
   if (src && !read.length) throw new Error("Check at least one column to read (step 2).");
   if (!(thr >= 0 && thr <= 100)) throw new Error("The review threshold must be from 0 to 100.");
@@ -291,11 +303,12 @@ async function loadRecipe(name) {
   const r = await getJSON("/api/recipes/" + encodeURIComponent(name));
   $("qs").replaceChildren();
   r.questions.forEach(addQuestion);
-  $("thr").value = Math.round(r.review_below * 100);
+  $("thr").value = +(r.review_below * 100).toPrecision(12);  // 0.605 shows as 60.5, not 61
   $("rname").value = r.name;
-  wantedRead = r.read || [];
+  wantedRead = Array.isArray(r.read) ? r.read : [];
   savedName = r.name;
   if (src) renderCols(src.skip);
+  savedKey = currentKey();  // after the form is filled: this is the definition the saved file stands for
   $("pick").value = "";
   renderUse();
 }
@@ -313,13 +326,13 @@ async function run() {
     msg.textContent = "";
     renderResults();
   } catch (e) { msg.className = "msg-line bad"; msg.textContent = e.message; }
-  $("runbtn").disabled = false;
+  $("runbtn").disabled = !src;
 }
 $("runbtn").addEventListener("click", run);
 
 function renderResults() {
   const { out, recipe } = last;
-  const errors = out.rows.filter((r) => r.error).length;
+  const errors = (out.failed || []).length;  // from the server: a source column may also be called "error"
   $("noresults").hidden = true;
   $("results").hidden = false;
   $("sumtxt").replaceChildren(h("b", null, `${out.count} rows · ${(out.count - errors) * recipe.questions.length} decisions · ${Math.round(out.ms)} ms`), " on this computer");
@@ -332,22 +345,23 @@ function renderResults() {
 }
 function renderBody() {
   const { out, recipe } = last;
-  const labels = {};
+  const failed = new Set(out.failed || []);
+  const labels = Object.create(null);
   for (const q of recipe.questions) {
-    labels[q.name] = {};
+    labels[q.name] = Object.create(null);
     const c = q.type === "choose" ? q.options : q.levels;
     if (c && !Array.isArray(c)) for (const [k, d] of Object.entries(c)) labels[q.name][k] = label(k, d);
   }
-  const rows = out.rows.filter((r) => filter === "all" || r.needs_review);
-  const trs = rows.slice(0, MAX_ROWS_SHOWN).map((r) => {
+  const rows = out.rows.map((r, i) => [r, failed.has(i)]).filter(([r]) => filter === "all" || r.needs_review);
+  const trs = rows.slice(0, MAX_ROWS_SHOWN).map(([r, bad]) => {
     const tds = recipe.read.map((c) => h("td", { class: "msg" }, r[c] == null ? "" : String(r[c])));
     for (const q of recipe.questions) {
-      if (r.error) { tds.push(h("td", null, "-")); continue; }
+      if (bad) { tds.push(h("td", null, "-")); continue; }
       const conf = r[q.name + "_confidence"];
       const v = q.type === "yes_no" ? (r[q.name] === "yes" ? "Yes" : "No") : (labels[q.name][r[q.name]] || String(r[q.name]));
       tds.push(h("td", null, h("span", { class: "v" }, v), h("span", { class: "c" + (conf < recipe.review_below ? " low" : "") }, Math.round(conf * 100) + "% sure")));
     }
-    const tag = r.error ? h("span", { class: "flagtag", title: r.error }, "Error") : r.needs_review ? h("span", { class: "flagtag" }, "Check") : null;
+    const tag = bad ? h("span", { class: "flagtag", title: r.error }, "Error") : r.needs_review ? h("span", { class: "flagtag" }, "Check") : null;
     return h("tr", { class: r.needs_review ? "flag" : "" }, tds, h("td", null, tag));
   });
   $("tbody").replaceChildren(...trs);
@@ -381,12 +395,19 @@ async function download(format) {
 $("dl-csv").addEventListener("click", () => download("csv"));
 $("dl-xlsx").addEventListener("click", () => download("xlsx"));
 
+const defKey = (r) => JSON.stringify([r.read, r.questions, r.review_below]);
+function currentKey() {
+  try { return defKey(buildRecipe(true)); } catch (e) { return null; }
+}
 function renderUse() {
   const typed = $("rname").value.trim();
   const name = NAME_RE.test(typed) ? typed : savedName || "my-recipe";
-  const saved = savedName && name === savedName;
-  $("usenote").textContent = saved ? `The saved recipe "${name}" works the same way from every tool.`
-    : `Press Save as recipe to keep "${name}". Then it works the same way from every tool.`;
+  const cur = currentKey();
+  const saved = savedName && name === savedName && cur !== null && cur === savedKey;  // the form is what the saved file holds
+  const shown = !last || defKey(last.recipe) === savedKey;  // and so is the table
+  $("usenote").textContent = !saved ? `Press Save as recipe to keep "${name}". Then it works the same way from every tool.`
+    : !shown ? `The saved recipe "${name}" is not the one that made this table. Run again to see what it gives.`
+    : `The saved recipe "${name}" works the same way from every tool.`;
   $("uselines").replaceChildren(
     codeBlock(`decisiontune run ${name} tickets.csv -o sorted.csv`),
     codeBlock(`Recipe.load("${name}").run(rows)            # Python`),
@@ -394,6 +415,9 @@ function renderUse() {
     codeBlock(`"Run ${name} on this file."                  # Claude Desktop, Cursor (MCP)`));
 }
 $("rname").addEventListener("input", renderUse);
+for (const [el, evs] of [[$("qs"), ["input", "change", "click"]], [$("thr"), ["input"]], [$("cols"), ["change"]], [$("addq"), ["click"]]]) {
+  evs.forEach((ev) => el.addEventListener(ev, renderUse));  // any edit to the definition can make the saved copy differ
+}
 
 // save
 $("savebtn").addEventListener("click", () => { $("saverow").hidden = !$("saverow").hidden; if (!$("saverow").hidden) $("rname").focus(); });
@@ -404,6 +428,7 @@ async function save() {
     if (!NAME_RE.test(recipe.name)) throw new Error("Give the recipe a name: lowercase letters, numbers, - and _.");
     const out = await postJSON("/api/recipes", recipe);
     savedName = out.saved;
+    savedKey = defKey(recipe);
     msg.className = "msg-line";
     msg.textContent = `Saved as "${out.saved}".`;
     $("saverow").hidden = true;
@@ -448,5 +473,6 @@ $("conn").replaceChildren(
 
 addQuestion();
 renderUse();
+$("runbtn").disabled = true;  // until items are loaded
 refreshRecipes();
 { const t = location.hash.startsWith("#tab-") ? location.hash.slice(5) : ""; if (["try", "run", "recipes", "connect"].includes(t)) showTab(t); }

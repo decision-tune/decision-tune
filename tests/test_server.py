@@ -16,22 +16,40 @@ CSV_TEXT = open(DATA, encoding="utf-8").read()
 J = {"Content-Type": "application/json"}
 
 
+def _n(state, question):
+    return sum(map(ord, str(state) + question))
+
+
+def fk_choose(state, question, keys):
+    """Pure function of (state, question, option keys): the pick and its confidence (0.40 to 0.94)."""
+    n = _n(state, question)
+    return keys[n % len(keys)], 0.4 + (n % 55) / 100
+
+
+def fk_yes(state, question):
+    return (0.95 if "refund" in str(state) else 0.1) + (_n(state, question) % 5) / 100
+
+
 class Fake:
-    """Answers are a pure function of the input, so the test can recompute them. Counts every call."""
+    """Answers are pure functions of the input, so a test can recompute them. Records every call."""
 
     def __init__(self):
-        self.calls = 0
+        self.log = []
         self.backend_name = "fake"
 
+    @property
+    def calls(self):
+        return len(self.log)
+
     def choose(self, state, question, options):
-        self.calls += 1
+        self.log.append(("choose", state, question, options))
         keys = list(options)
-        pick = keys[len(str(state)) % len(keys)]
-        return {"choice": pick, "probabilities": {k: 1 / len(keys) for k in keys}, "confidence": 0.9}
+        pick, conf = fk_choose(state, question, keys)
+        return {"choice": pick, "probabilities": {k: 1 / len(keys) for k in keys}, "confidence": conf}
 
     def yes_no(self, state, question):
-        self.calls += 1
-        return 0.95 if "refund" in str(state) else 0.1
+        self.log.append(("yes_no", state, question, None))
+        return fk_yes(state, question)
 
 
 @pytest.fixture
@@ -61,14 +79,6 @@ def call(s, method, path, body=None, headers=None):
 def post(s, path, obj, headers=J):
     st, h, data = call(s, "POST", path, obj, headers)
     return st, h, (json.loads(data) if h["Content-Type"].startswith("application/json") else data)
-
-
-def scripted(row):
-    state = {"subject": row["subject"], "message": row["message"]}
-    team = ["billing", "shipping", "tech"][len(str(state)) % 3]
-    refund = "yes" if "refund" in str(state) else "no"
-    tone = ["neg", "neu", "pos"][len(str(state)) % 3]
-    return team, refund, tone
 
 
 # 1. static files, status, headers
@@ -107,7 +117,7 @@ def test_decide_choose_and_yes_no(srv):
         st, _, out = post(srv, path, {"state": "box broke", "question": "Which?", "options": ["a", "b"]})
         assert st == 200 and out["choice"] in ("a", "b") and "probabilities" in out and out["ms"] >= 0
     st, _, out = post(srv, "/decide", {"state": "I want a refund", "question": "Refund?"})
-    assert st == 200 and out["answer"] == "yes" and out["p_yes"] == 0.95 and "ms" in out
+    assert st == 200 and out["answer"] == "yes" and out["p_yes"] == fk_yes("I want a refund", "Refund?") and "ms" in out
 
 
 @pytest.mark.parametrize("body", [{"state": "x"}, [1], "nope"])
@@ -146,16 +156,33 @@ def test_recipe_list_get_and_save(srv, tmp_path):
 # 4. runs
 def test_run_endpoint_uses_model(srv):
     recipe = Recipe.load("support-triage").to_dict()
+    qs = recipe["questions"]
     st, _, out = post(srv, "/api/run", {"recipe": recipe, "input": {"type": "csv", "data": CSV_TEXT}})
     assert st == 200 and out["count"] == 8 and len(out["rows"]) == 8
-    assert srv.fake.calls == 24  # 8 rows x 3 questions, one model call each
     want = list(csv.DictReader(io.StringIO(CSV_TEXT)))
+    # exactly 24 calls, row by row, question by question, with the recipe's own question text, options and state
+    expect_calls = [(q["type"] if q["type"] == "yes_no" else "choose", {"subject": r["subject"], "message": r["message"]},
+                     q["question"], q.get("options") or q.get("levels")) for r in want for q in qs]
+    assert srv.fake.log == expect_calls and len(expect_calls) == 24
+    flagged = 0
     for row, src in zip(out["rows"], want):
-        team, refund, tone = scripted(src)
-        assert (row["team"], row["refund"], row["tone"]) == (team, refund, tone)
-        assert row["subject"] == src["subject"] and row["needs_review"] is False
+        state, bad = {"subject": src["subject"], "message": src["message"]}, False
+        for q in qs:
+            if q["type"] == "yes_no":
+                p = fk_yes(state, q["question"])
+                assert (row[q["name"]], row[q["name"] + "_p_yes"]) == ("yes" if p >= 0.5 else "no", round(p, 4))
+                conf = max(p, 1 - p)
+            else:
+                pick, conf = fk_choose(state, q["question"], list(q.get("options") or q["levels"]))
+                assert row[q["name"]] == pick
+            assert row[q["name"] + "_confidence"] == round(conf, 4)
+            bad |= conf < 0.6
+        assert row["needs_review"] is bad and row["subject"] == src["subject"]
+        flagged += bad
+    assert 0 < flagged < 8  # the fake really does produce both flagged and clean rows
+    assert len({r["team"] for r in out["rows"]}) > 1 and len({r["tone"] for r in out["rows"]}) > 1
     assert out["columns"][:2] == ["subject", "message"] and {"team", "refund", "tone", "needs_review"} <= set(out["columns"])
-    assert out["needs_review"] == 0 and out["ms"] >= 0
+    assert out["needs_review"] == flagged and out["ms"] >= 0 and out["failed"] == []
 
 
 def test_run_by_name_and_flags_review(srv):
@@ -300,3 +327,311 @@ def test_unknown_post_is_404_and_errors_never_echo_body(srv):
     assert st == 400 and b"SECRET-PAYLOAD" not in body
     st, _, out = post(srv, "/api/run", {"recipe": "SECRET-NAME-x", "input": {"type": "lines", "data": "x"}})
     assert st == 400 and "Traceback" not in out["error"]
+
+
+# ---- T2-fix1: protocol errors, other methods, validation, fixed error text
+SEC = ("X-Content-Type-Options", "Cache-Control", "Referrer-Policy", "X-Frame-Options")
+
+
+def raw(s, data, n=4096):
+    import socket
+
+    sock = socket.create_connection(("127.0.0.1", s.server_address[1]), timeout=10)
+    sock.sendall(data)
+    out = b""
+    while True:
+        chunk = sock.recv(n)
+        if not chunk:
+            break
+        out += chunk
+    sock.close()
+    return out
+
+
+def test_unsupported_methods_get_json_security_headers_and_host_check(srv):
+    for m in ("TRACE", "FOO", "CONNECT"):
+        st, h, body = call(srv, m, "/", None, J)
+        assert st in (405, 501) and json.loads(body)["error"], m
+        assert all(k in h for k in SEC) and h["Content-Type"].startswith("application/json")
+    st, h, body = call(srv, "TRACE", "/", None, {**J, "Host": "evil.example"})
+    assert st == 403 and json.loads(body)["error"] and all(k in h for k in SEC)
+    assert call(srv, "TRACE", "/", None, {**J, "Origin": "http://evil.example"})[0] == 403
+
+
+def test_malformed_requests_get_json_not_stdlib_html(srv):
+    for data in (b"GET /" + b"a" * 70000 + b" HTTP/1.0\r\n\r\n",
+                 b"GET / HTTP/1.0\r\n" + b"X: y\r\n" * 200 + b"\r\n"):
+        out = raw(srv, data)
+        head, _, body = out.partition(b"\r\n\r\n")
+        assert head.startswith(b"HTTP/1.") and b"text/html" not in head and b"<html" not in body.lower(), data[:20]
+        assert json.loads(body)["error"]
+        assert all(k.encode().lower() in head.lower() for k in SEC)
+    for data in (b"GARBAGE x y\r\n\r\n", b"GET / HTTP/9.9\r\nHost: x\r\n\r\n"):  # no usable version: HTTP/0.9 has no headers, the body is still ours
+        out = raw(srv, data)
+        assert json.loads(out)["error"] and b"<html" not in out.lower()
+
+
+@pytest.mark.parametrize("method", ["PUT", "DELETE", "PATCH"])
+def test_state_changing_methods_get_origin_and_content_type_checks(srv, method):
+    assert call(srv, method, "/api/recipes", "{}", {**J, "Origin": "http://evil.example"})[0] == 403
+    assert call(srv, method, "/api/recipes", "{}", {**J, "Sec-Fetch-Site": "cross-site"})[0] == 403
+    assert call(srv, method, "/api/recipes", "{}", {"Content-Type": "application/x-www-form-urlencoded"})[0] in (403, 415)
+    assert call(srv, method, "/api/recipes", "{}", J)[0] == 405
+
+
+@pytest.mark.parametrize("body", [
+    {"question": None, "state": 42, "options": False},
+    {"question": "q", "state": 42},
+    {"question": "q", "state": None},
+    {"question": 5},
+    {"question": "   "},
+    {"question": "q", "options": False},
+    {"question": "q", "options": "ab"},
+    {"question": "q", "options": [1, 2]},
+    {"question": "q", "options": ["a"]},
+    {"question": "q", "options": ["a", ""]},
+    {"question": "q", "options": {"a": 1, "b": "x"}},
+    {"question": "q", "options": [["a"], ["b"]]},
+])
+def test_decide_validates_before_any_model_call(srv, body):
+    st, _, out = post(srv, "/decide", body)
+    assert st == 400 and out["error"] and srv.fake.calls == 0
+
+
+def test_decide_accepts_dict_options_and_empty_options_means_yes_no(srv):
+    st, _, out = post(srv, "/decide", {"state": "s", "question": "q", "options": {"a": "A: one", "b": "B: two"}})
+    assert st == 200 and out["choice"] in ("a", "b")
+    st, _, out = post(srv, "/decide", {"state": "s", "question": "q", "options": []})
+    assert st == 200 and out["answer"] in ("yes", "no")
+
+
+@pytest.mark.parametrize("exc", [TypeError, KeyError, AttributeError, ValueError, csv.Error, RuntimeError])
+def test_model_exception_text_never_reaches_the_client(srv, exc):
+    def boom(*a):
+        raise exc("SECRET-PAYLOAD")
+
+    srv.fake.choose = srv.fake.yes_no = boom
+    for body in ({"state": "x", "question": "q", "options": ["a", "b"]}, {"state": "x", "question": "q"}):
+        st, _, raw_body = call(srv, "POST", "/decide", body, J)
+        assert st == 500 and b"SECRET-PAYLOAD" not in raw_body and exc.__name__.encode() not in raw_body
+
+
+@pytest.mark.parametrize("path,body", [
+    ("/decide", [1]), ("/decide", "x"), ("/api/run", {"input": {"type": "lines", "data": "x"}}),
+    ("/api/run", [1]), ("/api/run", {"recipe": ["SECRET-PAYLOAD"], "input": "SECRET-PAYLOAD"}),
+    ("/api/preview", {"input": None}), ("/api/preview", {}), ("/api/recipes", {"name": "x", "questions": [None]}),
+    ("/api/export", [1]), ("/api/export", {"columns": 5, "rows": [], "format": "csv"}),
+    ("/recipes/support-triage/run", {"rows": [1]}), ("/recipes/support-triage/run", {}),
+])
+def test_bad_bodies_get_fixed_messages_not_exception_names(srv, path, body):
+    st, _, out = post(srv, path, body)
+    assert st == 400 and out["error"] and not any(w in out["error"] for w in ("Error", "KeyError", "SECRET", "'"))
+
+
+def test_csv_parse_error_is_a_fixed_message(srv):
+    big = "a\n" + "x" * 200000 + "\n"  # csv.Error: field larger than field limit
+    st, _, out = post(srv, "/api/run", {"recipe": "support-triage", "input": {"type": "csv", "data": big}})
+    assert (st, out["error"]) == (400, "cannot read the CSV data")
+
+
+# ---- limits
+def test_limit_constants():
+    from decision_tune import server
+
+    assert (server.MAX_ROWS, server.MAX_COLUMNS, server.MAX_CELLS, server.MAX_DECISIONS) == (100_000, 1_000, 5_000_000, 2_000_000)
+    assert (server.MAX_ZIP_TOTAL, server.MAX_ZIP_MEMBER) == (200 << 20, 100 << 20)
+    assert (server.READ_TIMEOUT, server.MAX_ACTIVE) == (30, 16)
+
+
+def _limit(st, out):
+    assert st == 413 and out["error"] and "Traceback" not in out["error"]
+    return out["error"]
+
+
+@pytest.mark.parametrize("rows,cols,named", [(100_001, 1, "100,000 rows"), (1, 1_001, "1,000 columns"), (5_001, 1_000, "5,000,000")])
+def test_export_dimension_limits(srv, rows, cols, named):
+    names = [f"c{i}" for i in range(cols)]
+    st, h, body = call(srv, "POST", "/api/export", json.dumps({"columns": names, "rows": [{}] * rows, "format": "csv"}), J)
+    assert st == 413 and h["Content-Type"].startswith("application/json")
+    assert named in json.loads(body)["error"]
+
+
+def test_export_rejects_repeated_columns(srv):
+    st, _, out = post(srv, "/api/export", {"columns": ["a"] * 1000, "rows": [{"a": "x" * 1000}] * 100, "format": "csv"})
+    assert st == 400 and out["error"]
+
+
+def test_export_within_limits_still_works(srv):
+    st, _, body = call(srv, "POST", "/api/export", json.dumps({"columns": ["a", "b"], "rows": [{"a": 1, "b": 2}] * 1000, "format": "csv"}), J)
+    assert st == 200 and body.count(b"\n") == 1001
+
+
+def test_csv_and_rows_input_limits(srv, monkeypatch):
+    from decision_tune import server
+
+    monkeypatch.setattr(server, "MAX_ROWS", 5)
+    r = {"name": "t", "read": ["a"], "questions": [{"name": "q", "type": "yes_no", "question": "Is it?"}]}
+    over = "a\n" + "x\n" * 6
+    for path, body in (("/api/run", {"recipe": r, "input": {"type": "csv", "data": over}}),
+                       ("/api/preview", {"input": {"type": "csv", "data": over}}),
+                       ("/api/run", {"recipe": r, "input": {"type": "rows", "data": [{"a": "x"}] * 6}}),
+                       ("/api/run", {"recipe": r, "input": {"type": "lines", "data": "x\n" * 6}})):
+        _limit(*post(srv, path, body)[::2])
+    assert call(srv, "POST", "/recipes/support-triage/run", "subject,message\n" + "a,b\n" * 6, {"Content-Type": "text/csv"})[0] == 413
+    ok = post(srv, "/api/run", {"recipe": r, "input": {"type": "csv", "data": "a\n" + "x\n" * 5}})
+    assert ok[0] == 200 and srv.fake.calls == 5
+
+
+def test_input_column_and_cell_limits(srv, monkeypatch):
+    from decision_tune import server
+
+    monkeypatch.setattr(server, "MAX_COLUMNS", 3)
+    monkeypatch.setattr(server, "MAX_CELLS", 10)
+    r = {"name": "t", "read": ["a"], "questions": [{"name": "q", "type": "yes_no", "question": "Is it?"}]}
+    _limit(*post(srv, "/api/preview", {"input": {"type": "csv", "data": "a,b,c,d\n1,2,3,4\n"}})[::2])
+    _limit(*post(srv, "/api/preview", {"input": {"type": "csv", "data": "a,b,c\n" + "1,2,3\n" * 4}})[::2])  # 12 cells
+    assert post(srv, "/api/preview", {"input": {"type": "csv", "data": "a,b,c\n" + "1,2,3\n" * 3}})[0] == 200
+    assert srv.fake.calls == 0
+
+
+def test_decision_budget(srv, monkeypatch):
+    from decision_tune import server
+
+    monkeypatch.setattr(server, "MAX_DECISIONS", 20)  # 8 rows x 3 questions = 24
+    _limit(*post(srv, "/api/run", {"recipe": "support-triage", "input": {"type": "csv", "data": CSV_TEXT}})[::2])
+    _limit(*post(srv, "/recipes/support-triage/run", {"rows": [{"subject": "s", "message": "m"}] * 8})[::2])
+    assert srv.fake.calls == 0
+    monkeypatch.setattr(server, "MAX_DECISIONS", 24)
+    assert post(srv, "/api/run", {"recipe": "support-triage", "input": {"type": "csv", "data": CSV_TEXT}})[0] == 200
+
+
+def _zip_b64(members):
+    import zipfile
+
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as z:
+        for name, size in members:
+            z.writestr(name, b"\0" * size)
+    return base64.b64encode(buf.getvalue()).decode()
+
+
+@pytest.mark.parametrize("members", [[("big.xml", (100 << 20) + 1)], [("a", 70 << 20), ("b", 70 << 20), ("c", 70 << 20)]],
+                         ids=["member-over-100MB", "total-over-200MB"])
+def test_xlsx_zip_bomb_is_refused_before_openpyxl(srv, members, monkeypatch):
+    import openpyxl
+
+    def never(*a, **k):
+        raise AssertionError("openpyxl must not see a bomb")
+
+    monkeypatch.setattr(openpyxl, "load_workbook", never)
+    data = _zip_b64(members)
+    assert len(data) < 5 << 20  # a tiny upload that expands past the cap
+    for path, body in (("/api/preview", {"input": {"type": "xlsx", "data": data}}),
+                       ("/api/run", {"recipe": "support-triage", "input": {"type": "xlsx", "data": data}})):
+        err = _limit(*post(srv, path, body)[::2])
+        assert "MB" in err
+    assert srv.fake.calls == 0
+
+
+def _xlsx_b64(rows, cols=("a",)):
+    buf = io.BytesIO()
+    write_xlsx(buf, list(cols), rows)
+    return base64.b64encode(buf.getvalue()).decode()
+
+
+def test_xlsx_row_and_column_limits_are_enforced_while_reading(srv, monkeypatch):
+    from decision_tune import server
+
+    r = {"name": "t", "read": ["a"], "questions": [{"name": "q", "type": "yes_no", "question": "Is it?"}]}
+    monkeypatch.setattr(server, "MAX_ROWS", 50)
+    over = _xlsx_b64([{"a": f"v{i}"} for i in range(51)])
+    for path, body in (("/api/preview", {"input": {"type": "xlsx", "data": over}}),
+                       ("/api/run", {"recipe": r, "input": {"type": "xlsx", "data": over}})):
+        _limit(*post(srv, path, body)[::2])
+    ok = _xlsx_b64([{"a": f"v{i}"} for i in range(50)])
+    st, _, out = post(srv, "/api/run", {"recipe": r, "input": {"type": "xlsx", "data": ok}})
+    assert st == 200 and out["count"] == 50 and srv.fake.calls == 50
+    monkeypatch.setattr(server, "MAX_COLUMNS", 2)
+    wide = _xlsx_b64([{"a": 1, "b": 2, "c": 3}], cols=("a", "b", "c"))
+    _limit(*post(srv, "/api/preview", {"input": {"type": "xlsx", "data": wide}})[::2])
+
+
+def test_xlsx_blank_rows_count_toward_the_row_limit(srv, monkeypatch):
+    from decision_tune import server
+
+    monkeypatch.setattr(server, "MAX_ROWS", 10)
+    buf = io.BytesIO()
+    import openpyxl
+
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.append(["a"])
+    ws.cell(row=500, column=1, value="late")  # 498 blank rows, then data
+    wb.save(buf)
+    _limit(*post(srv, "/api/preview", {"input": {"type": "xlsx", "data": base64.b64encode(buf.getvalue()).decode()}})[::2])
+
+
+# ---- connection deadline and bounded admission
+def test_stalled_body_gets_408_and_frees_the_thread(srv, monkeypatch):
+    import socket
+
+    from decision_tune import server
+
+    monkeypatch.setattr(server.Handler, "timeout", 0.5)
+    sock = socket.create_connection(("127.0.0.1", srv.server_address[1]), timeout=10)
+    sock.sendall(b"POST /decide HTTP/1.0\r\nHost: 127.0.0.1\r\nContent-Type: application/json\r\nContent-Length: 100\r\n\r\n{\"q")
+    out = b""
+    while chunk := sock.recv(4096):  # the server must hang up on its own
+        out += chunk
+    sock.close()
+    assert out.startswith(b"HTTP/1.0 408") and b"error" in out and srv.fake.calls == 0
+
+
+def test_at_most_16_requests_at_once_extras_get_503(srv, monkeypatch):
+    import socket
+    import time
+
+    from decision_tune import server
+
+    monkeypatch.setattr(server.Handler, "timeout", 20)
+    idle = [socket.create_connection(("127.0.0.1", srv.server_address[1]), timeout=10) for _ in range(server.MAX_ACTIVE)]
+    try:
+        st, h, body = call(srv, "GET", "/api/status")
+        assert st == 503 and json.loads(body)["error"] and all(k in h for k in SEC)
+    finally:
+        for s in idle:
+            s.close()
+    for _ in range(40):  # slots come back once the idle connections are gone
+        if call(srv, "GET", "/api/status")[0] == 200:
+            break
+        time.sleep(0.1)
+    else:
+        raise AssertionError("slots were not released")
+
+
+# ---- GET failures
+def test_recipe_get_failures_are_fixed_json(srv, monkeypatch):
+    from decision_tune import server
+
+    def deny(*a, **k):
+        raise PermissionError("/secret/path")
+
+    monkeypatch.setattr(server, "list_recipes", deny)
+    st, h, body = call(srv, "GET", "/api/recipes")
+    assert st == 500 and json.loads(body)["error"] and b"/secret" not in body and all(k in h for k in SEC)
+    monkeypatch.setattr(server.Recipe, "load", deny)
+    st, _, body = call(srv, "GET", "/api/recipes/support-triage")
+    assert st == 500 and json.loads(body)["error"] and b"/secret" not in body
+    st, _, body = call(srv, "POST", "/api/run", {"recipe": "support-triage", "input": {"type": "lines", "data": "x"}}, J)
+    assert st == 500 and b"/secret" not in body  # the same boundary on POST
+
+
+# ---- failed rows are reported apart from source columns
+def test_input_column_named_error_is_not_a_failure(srv):
+    csv_in = "error,text\nkeep me,refund please\n,hello\n"
+    r = {"name": "t", "read": ["text"], "questions": [{"name": "q", "type": "yes_no", "question": "Is it?"}]}
+    st, _, out = post(srv, "/api/run", {"recipe": r, "input": {"type": "csv", "data": csv_in}})
+    assert st == 200 and out["failed"] == [] and out["rows"][0]["error"] == "keep me" and out["rows"][0]["q"] == "yes"
+    srv.fake.yes_no = lambda *a: (_ for _ in ()).throw(RuntimeError("too long"))
+    st, _, out = post(srv, "/api/run", {"recipe": r, "input": {"type": "csv", "data": csv_in}})
+    assert out["failed"] == [0, 1] and out["rows"][0]["error"].startswith("RuntimeError") and out["needs_review"] == 2
