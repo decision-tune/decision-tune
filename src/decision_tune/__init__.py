@@ -2,5 +2,6 @@
 __version__ = "1.0.0"
 
 from .hub import REPO, DecisionModel, download, verify
+from .recipe import Recipe, list_recipes
 
-__all__ = ["DecisionModel", "REPO", "download", "verify", "__version__"]
+__all__ = ["DecisionModel", "Recipe", "REPO", "download", "list_recipes", "verify", "__version__"]

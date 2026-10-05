@@ -25,6 +25,7 @@ dependencies = [
   "safetensors>=0.4",
   "huggingface_hub>=0.34",
   "numpy",
+  "openpyxl>=3.1",
 ]
 
 [project.optional-dependencies]

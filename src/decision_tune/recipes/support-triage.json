@@ -1,0 +1,16 @@
+{
+  "name": "support-triage",
+  "read": ["subject", "message"],
+  "questions": [
+    {"name": "team", "type": "choose", "question": "Which team should handle this customer message?",
+     "options": {"billing": "Billing: charges, refunds, invoices",
+                 "shipping": "Shipping: delivery, lost or damaged packages",
+                 "tech": "Tech support: bugs, crashes, login problems"}},
+    {"name": "refund", "type": "yes_no", "question": "Is the customer asking for a refund or an exchange?"},
+    {"name": "tone", "type": "scale", "question": "What is the tone of the customer?",
+     "levels": {"neg": "Negative: the customer is unhappy or upset",
+                "neu": "Neutral: a plain request or question",
+                "pos": "Positive: the customer is happy or thankful"}}
+  ],
+  "review_below": 0.6
+}
