@@ -205,6 +205,27 @@ curl -s http://127.0.0.1:8000/recipes/support-triage/run -H 'Content-Type: text/
 
 The reply has `columns`, `rows`, `count`, `needs_review`, `failed` and `ms`. The server runs one model call at a time. By default, it listens only on localhost.
 
+## Use with AI coding agents
+
+The skill in [`skills/decisiontune/`](https://github.com/decision-tune/decision-tune/blob/main/skills/decisiontune/SKILL.md) teaches a coding agent how to install, call and prompt DecisionTune. It follows the open [Agent Skills](https://agentskills.io/specification) format.
+
+Install it with the `skills` CLI (it asks which agents to set up; add `-g` for all your projects):
+
+```bash
+npx skills add decision-tune/decision-tune --skill decisiontune
+```
+
+Or copy the `skills/decisiontune` folder into the skills folder of your agent:
+
+| Agent | Project folder | User folder |
+|---|---|---|
+| Claude Code | `.claude/skills/decisiontune/` | `~/.claude/skills/decisiontune/` |
+| OpenAI Codex CLI | `.agents/skills/decisiontune/` | `~/.agents/skills/decisiontune/` |
+| pi | `.agents/skills/decisiontune/` | `~/.agents/skills/decisiontune/` |
+| Cursor | `.cursor/skills/decisiontune/` or `.agents/skills/decisiontune/` | `~/.cursor/skills/decisiontune/` |
+
+Cursor can also use the rule in [`.cursor/rules/decisiontune.mdc`](https://github.com/decision-tune/decision-tune/blob/main/.cursor/rules/decisiontune.mdc). For any other agent that reads `AGENTS.md`, add a line there that points to the skill URL. Or tell your agent: "Read https://raw.githubusercontent.com/decision-tune/decision-tune/main/skills/decisiontune/SKILL.md and use DecisionTune."
+
 ## Behavior
 
 The package uses the same input format and readout as the published scores. Each question is one sequence: `[CLS] question [SEP] [MASK] option ... [SEP] state [SEP]`. A linear head scores each `[MASK]`, and a softmax over the options gives the probabilities. There is no calibration temperature, no option filter and no truncation. The package refuses a sequence longer than 8,192 tokens. `src/decision_tune/engine.py` is all of the inference code. The model repo also contains it as `engine.py`.

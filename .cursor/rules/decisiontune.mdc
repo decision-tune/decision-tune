@@ -1,0 +1,34 @@
+---
+description: How to install, call and prompt DecisionTune 1.0, a local model that picks one option from a list or returns P(yes). Use when code routes, triages or classifies text, selects a tool, runs a yes/no check, or labels rows of a spreadsheet.
+alwaysApply: false
+---
+
+# DecisionTune 1.0
+
+Full guide: `skills/decisiontune/SKILL.md` in this repo, or https://raw.githubusercontent.com/decision-tune/decision-tune/main/skills/decisiontune/SKILL.md
+
+- It picks among options you give. It does not generate text. Keep math, dates and counting in code.
+- Install: `pip install decision-tune`, or `pip install "decision-tune[mlx]"` on Apple silicon (Python 3.11+).
+- Agents cannot answer the download prompt. Run `decisiontune download --yes` once, or set `DECISION_TUNE_YES=1`.
+
+Python (load once, reuse):
+
+```python
+from decision_tune import DecisionModel
+
+m = DecisionModel.from_pretrained()
+r = m.choose("My package never arrived.", "Which team should handle this customer message?",
+             {"billing": "Billing: charges, refunds, invoices",
+              "shipping": "Shipping: delivery, lost or damaged packages",
+              "tech": "Tech support: bugs, crashes, login problems"})
+# {"choice": "shipping", "probabilities": {...}, "confidence": ...}
+p = m.yes_no("The order arrived broken. I want my money back.", "Is the customer asking for a refund?")  # a float, P(yes)
+```
+
+CLI: `decisiontune ask "<QUESTION>" --state "<TEXT>" --option "<OPTION 1>" --option "<OPTION 2>" --json` (leave out `--option` for yes/no).
+
+HTTP: `decisiontune serve`, then `POST http://127.0.0.1:8000/decide` with `Content-Type: application/json` and `{"state", "question", "options"}`.
+
+MCP: `{"mcpServers": {"decisiontune": {"command": "decisiontune", "args": ["mcp"]}}}` gives the tools `decide`, `run_recipe` and `list_recipes`.
+
+Prompting: describe each option in a short phrase, add a "none of these" option, ask one judgment per question, phrase yes/no so yes is the actionable case, and write down the criteria. Probabilities are not calibrated: set thresholds from your own labeled rows.
