@@ -446,7 +446,8 @@ def test_special_files_are_rejected_not_read(tmp_path):
     d = tmp_path / "folder"
     d.mkdir()
     (d / "a.txt").write_text("Where is my order?")
-    assert one(call(2, "run_recipe", recipe="support-triage", input_path=str(d)))["result"]["isError"] is False
+    r = {"name": "t", "read": ["text"], "questions": [{"name": "q", "type": "yes_no", "question": "Is it a question?"}]}
+    assert one(call(2, "run_recipe", recipe=r, input_path=str(d)))["result"]["isError"] is False
 
 
 def test_destination_created_during_the_run_is_not_clobbered(tmp_path):
@@ -537,3 +538,20 @@ def test_native_fd1_writes_do_not_corrupt_the_protocol():
     assert len(lines) == 3, p.stdout + p.stderr
     assert [strict(x)["id"] for x in lines] == [1, 2, 3] and strict(lines[1])["result"]["structuredContent"]["answer"] == "yes"
     assert "noise from a native library" in p.stderr and "noise" not in p.stdout
+
+
+# ---- GATE-fix1
+def test_run_recipe_rejects_absent_columns_before_the_model():
+    f = Fake()
+    (r,), _, loads = rpc(call(1, "run_recipe", recipe="support-triage", rows=[{"text": "refund please"}]), factory=lambda: f)
+    assert r["result"]["isError"] is True and r["result"]["content"][0]["text"] == "missing columns: subject, message"
+    assert f.calls == [] and loads == 0
+
+
+@pytest.mark.parametrize("opts", [[str(i) for i in range(33)], ["", "b"], ["a", "a"], ["a"], {"": "x", "b": "y"}])
+def test_decide_validates_options_like_http(opts):
+    f = Fake()
+    (r,), _, loads = rpc(call(1, "decide", state="s", question="q?", options=opts), factory=lambda: f)
+    assert r["result"]["isError"] is True and "options must be 2 to 32" in r["result"]["content"][0]["text"]
+    assert f.calls == [] and loads == 0
+    assert one(call(2, "decide", state="s", question="q?", options=[]))["result"]["structuredContent"]["answer"] == "yes"

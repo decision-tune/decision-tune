@@ -31,15 +31,22 @@ def _name(v, what):
     return v
 
 
-def _choices(q, key):
-    v = q.get(key)
-    if isinstance(v, dict):
-        ok = all(isinstance(k, str) and k and isinstance(d, str) for k, d in v.items())
+def check_options(options):
+    """The one rule for answer choices: 2 to 32 different, non-empty texts (a list), or a {key: description} dict."""
+    if isinstance(options, dict):
+        ok = all(isinstance(k, str) and k and isinstance(d, str) for k, d in options.items())
     else:
-        ok = isinstance(v, list) and all(isinstance(o, str) and o for o in v) and len(set(v)) == len(v)
-    if not ok or not 2 <= len(v) <= 32:
-        raise ValueError(f"question {q['name']!r}: {key} must be 2 to 32 entries, a {{key: description}} dict or a list of strings")
-    return v
+        ok = isinstance(options, list) and all(isinstance(o, str) and o for o in options) and len(set(options)) == len(options)
+    if not ok or not 2 <= len(options) <= 32:
+        raise ValueError("options must be 2 to 32 different, non-empty texts (a list or a {key: description} object)")
+    return options
+
+
+def _choices(q, key):
+    try:
+        return check_options(q.get(key))
+    except ValueError:
+        raise ValueError(f"question {q['name']!r}: {key} must be 2 to 32 entries, a {{key: description}} dict or a list of strings") from None
 
 
 class Recipe:
@@ -120,6 +127,13 @@ class Recipe:
             raise
         return path
 
+    def check_columns(self, columns):
+        """Refuse a run whose input lacks a column the recipe reads: an absent column must never reach the model as empty text."""
+        have = set(columns)
+        missing = [c for c in self.read if c not in have]
+        if missing:
+            raise ValueError(f"missing columns: {', '.join(missing)}")
+
     def state(self, row):
         cols = self.read or list(row)
         cell = lambda c: "" if row.get(c) is None else row[c]
@@ -147,8 +161,11 @@ class Recipe:
         out["needs_review"] = any(c < self.review_below for c in conf)
         return out
 
-    def run(self, rows, model=None, progress=None):
+    def run(self, rows, model=None, progress=None, failed=None):
+        """Answers for every row. failed, if a list, gets the position of each row the model could not decide."""
         global _model
+        if rows:
+            self.check_columns({k for r in rows for k in r})
         if model is None:
             if _model is None:
                 from .hub import DecisionModel
@@ -157,7 +174,10 @@ class Recipe:
             model = _model
         results = []
         for i, row in enumerate(rows, 1):
-            results.append({**row, **self.decide_row(model, row)})
+            res = self.decide_row(model, row)
+            if "error" in res and failed is not None:  # decide_row sets it only on failure; a source column may also be called "error"
+                failed.append(i - 1)
+            results.append({**row, **res})
             if progress:
                 progress(i, len(rows))
         return results

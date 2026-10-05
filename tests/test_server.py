@@ -677,3 +677,64 @@ def test_xlsx_wide_data_row_is_refused_with_a_narrow_header(srv, monkeypatch, lo
     st, _, out = post(srv, "/api/preview", {"input": {"type": "xlsx", "data": _wide_row_xlsx(5)}})
     if lowered == "MAX_COLUMNS":
         assert st == 200 and out["columns"] == ["a"] and out["count"] == 1  # a row exactly at the limit is fine
+
+
+# ---- GATE-fix1
+def test_run_with_absent_read_columns_is_400_and_never_reaches_the_model(srv):
+    for st, _, out in (post(srv, "/api/run", {"recipe": "support-triage", "input": {"type": "csv", "data": "text\nrefund please\n"}}),
+                       post(srv, "/api/run", {"recipe": "support-triage", "input": {"type": "lines", "data": "refund please"}}),
+                       post(srv, "/api/run", {"recipe": "support-triage", "input": {"type": "rows", "data": [{"text": "x"}]}}),
+                       post(srv, "/recipes/support-triage/run", {"rows": [{"text": "x"}]}),
+                       post(srv, "/api/run", {"recipe": "support-triage", "input": {"type": "csv", "data": "text\n"}})):  # header only
+        assert (st, out["error"]) == (400, "missing columns: subject, message")
+    assert srv.fake.calls == 0
+
+
+def _ids(srv, n=1, data=CSV_TEXT):
+    return [post(srv, "/api/run", {"recipe": "support-triage", "input": {"type": "csv", "data": data}})[2]["run_id"] for _ in range(n)]
+
+
+def test_every_run_can_be_downloaded_by_its_run_id(srv):
+    (rid,) = _ids(srv)
+    st, h, body = call(srv, "GET", f"/api/export?run={rid}&format=csv")
+    assert st == 200 and h["Content-Disposition"] == 'attachment; filename="decisions.csv"' and h["Content-Type"].startswith("text/csv")
+    rows = list(csv.reader(io.StringIO(body.decode("utf-8-sig"))))
+    assert len(rows) == 9 and rows[0][:2] == ["subject", "message"] and "team" in rows[0] and rows[1][0] == "Order #4417"
+    import openpyxl
+
+    st, h, body = call(srv, "GET", f"/api/export?run={rid}&format=xlsx")
+    assert st == 200 and openpyxl.load_workbook(io.BytesIO(body)).active.max_row == 9
+    st, _, out = post(srv, "/recipes/support-triage/run", {"rows": [{"subject": "=1+1", "message": "m"}]})
+    assert call(srv, "GET", f"/api/export?run={out['run_id']}&format=csv")[2].decode("utf-8-sig").splitlines()[1].startswith("'=1+1")  # formula guard
+
+
+def test_export_by_run_id_is_not_limited_by_result_expansion(srv):
+    row = {f"c{i}": "x" for i in range(998)} | {"subject": "s", "message": "refund"}  # 1,000 columns: accepted as input
+    st, _, out = post(srv, "/api/run", {"recipe": "support-triage", "input": {"type": "rows", "data": [row]}})
+    assert st == 200 and len(out["columns"]) > 1000
+    st, _, body = call(srv, "GET", f"/api/export?run={out['run_id']}&format=csv")
+    assert st == 200 and len(next(csv.reader(io.StringIO(body.decode("utf-8-sig"))))) == len(out["columns"])
+
+
+def test_only_the_last_eight_runs_are_kept(srv):
+    ids = _ids(srv, 9, "subject,message\na,b\n")
+    assert len(set(ids)) == 9 and all(re.fullmatch(r"[0-9a-f]{16}", i) for i in ids)
+    assert call(srv, "GET", f"/api/export?run={ids[0]}&format=csv")[0] == 404
+    assert all(call(srv, "GET", f"/api/export?run={i}&format=csv")[0] == 200 for i in ids[1:])
+
+
+@pytest.mark.parametrize("q", ["", "?run=nope&format=csv", "?run=0123456789abcdef&format=csv", "?format=csv", "?run=%00&format=csv"])
+def test_export_get_unknown_run_is_404_json(srv, q):
+    st, h, body = call(srv, "GET", "/api/export" + q)
+    assert st == 404 and h["Content-Type"].startswith("application/json") and json.loads(body)["error"]
+
+
+def test_export_get_bad_format_is_400(srv):
+    (rid,) = _ids(srv)
+    assert call(srv, "GET", f"/api/export?run={rid}&format=pdf")[0] == 400
+
+
+def test_decide_rejects_bad_options_everywhere_it_is_checked(srv):
+    for opts in (["a"], ["", "b"], ["a", "a"], [str(i) for i in range(33)], {"": "x", "b": "y"}):
+        assert post(srv, "/decide", {"state": "s", "question": "q?", "options": opts})[0] == 400
+    assert srv.fake.calls == 0

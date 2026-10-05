@@ -286,7 +286,7 @@ def test_run_xlsx_folder_and_errors(env, tmp_path):
     r.write_text(json.dumps({"name": "t", "read": ["text"], "questions": [{"name": "q", "type": "yes_no", "question": "Is it a greeting?"}]}))
     cli.main(["run", str(r), str(d)])
     assert (tmp_path / "notes-decided.csv").exists()
-    with pytest.raises(SystemExit, match="no column 'subject'"):
+    with pytest.raises(SystemExit, match="missing columns: subject, message"):
         cli.main(["run", "support-triage", str(tmp_path / "notes-decided.csv")])
     with pytest.raises(SystemExit, match="no such input"):
         cli.main(["run", "support-triage", str(tmp_path / "nope.csv")])
@@ -347,3 +347,29 @@ def test_mcp_uncached_model_without_consent_is_a_tool_error(tmp_path, monkeypatc
     mcp.run_stdio(lambda: cli._mcp_model(args), io.StringIO(json.dumps(req) + "\n"), out)
     res = json.loads(out.getvalue())["result"]
     assert res["isError"] and "Run `decisiontune download` first." in res["content"][0]["text"]
+
+
+# ---- GATE-fix1
+def test_ask_validates_options_before_loading_the_model(env):
+    for opts in (["a"], ["", "b"], ["a", "a"], [str(i) for i in range(33)]):
+        with pytest.raises(SystemExit, match="options must be 2 to 32"):
+            cli.main(["ask", "Which?", *[x for o in opts for x in ("--option", o)]])
+    assert env == []  # the model was never asked for
+
+
+def test_run_counts_failed_rows_by_execution_not_by_an_error_column(env, tmp_path, capsys, monkeypatch):
+    src = tmp_path / "in.csv"
+    src.write_text("subject,message,error\nhi,ok,source error text\nyo,boom,other\n")
+    r = tmp_path / "r.json"
+    r.write_text(json.dumps({"name": "t", "read": ["message"], "questions": [{"name": "q", "type": "yes_no", "question": "Is it?"}]}))
+    cli.main(["run", str(r), str(src), "-o", str(tmp_path / "a.csv")])
+    assert "failed" not in capsys.readouterr().err  # a source column named error is data, not a failure
+
+    def yes_no(self, state, question):
+        if state == "boom":
+            raise RuntimeError("too long")
+        return 0.9
+
+    monkeypatch.setattr(Fake, "yes_no", yes_no)
+    cli.main(["run", str(r), str(src), "-o", str(tmp_path / "b.csv")])
+    assert "1 rows failed" in capsys.readouterr().err

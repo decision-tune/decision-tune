@@ -10,7 +10,7 @@ from pathlib import Path
 from . import __version__, mcp, server
 from .engine import BACKENDS
 from .hub import REPO, DecisionModel, resolve
-from .recipe import BUILTIN, NAME_RE, Recipe, list_recipes, read_rows, recipes_dir, write_csv, write_xlsx
+from .recipe import BUILTIN, NAME_RE, Recipe, check_options, list_recipes, read_rows, recipes_dir, write_csv, write_xlsx
 from .server import decide
 
 
@@ -50,13 +50,12 @@ def _run(args):
         raise exists
     recipe = Recipe.load(args.recipe)
     cols, rows = read_rows(inp)
-    missing = [c for c in recipe.read if c not in cols]
-    if missing:  # otherwise every row would be decided on empty text
-        raise ValueError(f"the input has no column {', '.join(map(repr, missing))} (columns: {', '.join(cols) or 'none'})")
+    recipe.check_columns(cols)  # otherwise every row would be decided on empty text
     m = _load(args)
     step = lambda i, n: n > 50 and (i % 10 == 0 or i == n) and print(f"\r{i}/{n} rows", end="\n" if i == n else "", file=sys.stderr, flush=True)
     t = time.perf_counter()
-    res = recipe.run(rows, model=m, progress=step)
+    failed = []
+    res = recipe.run(rows, model=m, progress=step, failed=failed)
     ms = (time.perf_counter() - t) * 1000
     fd, name = tempfile.mkstemp(dir=out.parent, prefix=f".{out.name}.", suffix=".tmp")  # exclusive and unique: never a file that was already there
     os.close(fd)
@@ -79,9 +78,8 @@ def _run(args):
                 os.replace(tmp, out)
     finally:
         tmp.unlink(missing_ok=True)
-    failed = sum(1 for r in res if "error" in r)
     if failed:
-        print(f"decision-tune: {failed} rows failed (see the error column)", file=sys.stderr)
+        print(f"decision-tune: {len(failed)} rows failed (see the error column)", file=sys.stderr)
     print(f"{len(res)} rows, {sum(1 for r in res if r.get('needs_review'))} need review, {ms:.0f} ms. Wrote {out}")
 
 
@@ -167,6 +165,8 @@ def _main(argv=None):
         return _recipe(args)
     if args.cmd == "mcp":
         return mcp.run_stdio(lambda: _mcp_model(args))
+    if args.cmd == "ask" and args.option:
+        check_options(args.option)  # before the model loads
     m = _load(args)
     if args.cmd == "serve":
         return server.serve(m, args.host or "127.0.0.1", args.port, explicit_host=args.host is not None)

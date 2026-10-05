@@ -139,7 +139,8 @@ loadExample(0);
 
 // ---- 2. Run on many items
 let src = null;          // {input, label, preview}
-let wantedRead = null;   // columns a loaded recipe asked for: null = no recipe loaded, [] = all columns (as the recipe format says)
+let wantedRead = null;   // the loaded recipe's read, exactly as stored: null = no recipe loaded, [] = all columns (as the recipe format says)
+let colsEdited = false;  // the person changed the column boxes: from then on read follows the boxes, not the loaded recipe
 let savedName = "";
 let savedKey = "";       // the definition (read, questions, threshold) as it was last loaded or saved
 let last = null;         // {out, recipe}
@@ -154,9 +155,9 @@ function renderCols(skip) {
   const box = $("cols");
   if (!src) { box.replaceChildren(h("span", { class: "soft" }, "Add your items first.")); return; }
   const p = src.preview;
-  const wanted = (wantedRead || []).filter((c) => p.columns.includes(c));
+  const keep = wantedRead && !colsEdited;  // show the loaded recipe's own columns; never guess for it
   box.replaceChildren(...p.columns.map((c) => {
-    const on = wantedRead && !wantedRead.length ? true : wanted.length ? wanted.includes(c) : p.text.includes(c) && !(skip || []).includes(c);
+    const on = keep ? !wantedRead.length || wantedRead.includes(c) : p.text.includes(c) && !(skip || []).includes(c);
     const cb = h("input", { type: "checkbox", value: c });
     cb.checked = on;
     return h("label", null, cb, c);
@@ -171,7 +172,23 @@ function dropSource() {
   clearTimeout(pasteTimer);  // a pasted list still waiting to be previewed is an older source too
   src = null;
   renderCols();
-  $("runbtn").disabled = true;
+  updateRun();
+}
+// Run needs items, and items that have every column the loaded recipe reads. Otherwise say why, inline, and keep Run off.
+let shownProblem = false;
+function readProblem() {
+  if (!src || !wantedRead || colsEdited) return "";
+  const have = src.preview.columns;
+  return wantedRead.every((c) => have.includes(c)) ? "" : `This recipe reads ${wantedRead.join(", ")}. Your file has: ${have.join(", ") || "no columns"}.`;
+}
+function updateRun() {
+  const bad = readProblem();
+  $("runbtn").disabled = !src || !!bad;
+  if (bad || shownProblem) {
+    $("runmsg").className = "msg-line" + (bad ? " bad" : "");
+    $("runmsg").textContent = bad;
+  }
+  shownProblem = !!bad;
 }
 async function setSource(input, name, skip) {
   dropSource();
@@ -182,7 +199,7 @@ async function setSource(input, name, skip) {
     if (token !== srcToken) return;
     src = { input, label: name, preview, skip };
     renderCols(skip);
-    $("runbtn").disabled = false;
+    updateRun();
     srcInfo(`${name} · ${preview.count} rows · stays on this computer`);
   } catch (e) {
     if (token !== srcToken) return;
@@ -258,7 +275,7 @@ function parseChoices(text, kind) {
 const choicesText = (v) => (Array.isArray(v) ? v.join("\n") : Object.entries(v || {}).map(([k, d]) => `${k}: ${d}`).join("\n"));
 
 function addQuestion(q) {
-  q = q || { name: "", type: "choose", question: "", options: [] };
+  q = q || { name: "", type: "choose", question: "" };  // no options yet: "auto" parsing, so "key: description" lines make a dict
   const name = h("input", { type: "text", "aria-label": "Column name", placeholder: "column_name", autocomplete: "off", spellcheck: "false" });
   const type = h("select", { "aria-label": "Answer type" }, TYPES.map(([v, t]) => h("option", { value: v }, t)));
   const text = h("input", { type: "text", class: "qt", "aria-label": "Question", placeholder: "Which team should handle this?" });
@@ -295,9 +312,10 @@ function questions() {
 function buildRecipe(forSave) {
   const name = $("rname").value.trim();
   const thr = Number($("thr").value);
-  const read = src ? checkedCols() : wantedRead || [];
+  const keep = wantedRead && !colsEdited;  // a loaded recipe keeps its read exactly, [] included
+  const read = keep ? wantedRead : src ? checkedCols() : [];
   if (!forSave && !src) throw new Error("Add your items first (step 1).");
-  if (src && !read.length) throw new Error("Check at least one column to read (step 2).");
+  if (src && !keep && !read.length) throw new Error("Check at least one column to read (step 2).");
   if (!(thr >= 0 && thr <= 100)) throw new Error("The review threshold must be from 0 to 100.");
   return { name: forSave ? name : (NAME_RE.test(name) ? name : "untitled"), read, questions: questions(), review_below: thr / 100 };
 }
@@ -308,9 +326,11 @@ async function loadRecipe(name) {
   r.questions.forEach(addQuestion);
   $("thr").value = +(r.review_below * 100).toPrecision(12);  // 0.605 shows as 60.5, not 61
   $("rname").value = r.name;
-  wantedRead = Array.isArray(r.read) ? r.read : [];
+  wantedRead = Array.isArray(r.read) ? [...r.read] : [];
+  colsEdited = false;
   savedName = r.name;
   if (src) renderCols(src.skip);
+  updateRun();
   savedKey = currentKey();  // after the form is filled: this is the definition the saved file stands for
   $("pick").value = "";
   renderUse();
@@ -325,11 +345,11 @@ async function run() {
   $("runbtn").disabled = true;
   try {
     const out = await postJSON("/api/run", { recipe, input: src.input });
-    last = { out, recipe };
+    last = { out, recipe, cols: src.preview.columns };
     msg.textContent = "";
     renderResults();
   } catch (e) { msg.className = "msg-line bad"; msg.textContent = e.message; }
-  $("runbtn").disabled = !src;
+  updateRun();
 }
 $("runbtn").addEventListener("click", run);
 
@@ -341,11 +361,12 @@ function renderResults() {
   $("sumtxt").replaceChildren(h("b", null, `${out.count} rows · ${(out.count - errors) * recipe.questions.length} decisions · ${Math.round(out.ms)} ms`), " on this computer");
   $("f-all").textContent = "All " + out.count;
   $("f-review").textContent = "Needs review " + out.needs_review;
-  const shown = recipe.read.length ? recipe.read : [];
+  const shown = shownCols();
   $("thead").replaceChildren(h("tr", null, shown.map((c) => h("th", null, c)), recipe.questions.map((q) => h("th", null, q.name)), h("th")));
   renderBody();
   renderUse();
 }
+const shownCols = () => (last.recipe.read.length ? last.recipe.read : last.cols);  // read [] = every input column
 function renderBody() {
   const { out, recipe } = last;
   const failed = new Set(out.failed || []);
@@ -357,7 +378,7 @@ function renderBody() {
   }
   const rows = out.rows.map((r, i) => [r, failed.has(i)]).filter(([r]) => filter === "all" || r.needs_review);
   const trs = rows.slice(0, MAX_ROWS_SHOWN).map(([r, bad]) => {
-    const tds = recipe.read.map((c) => h("td", { class: "msg" }, r[c] == null ? "" : String(r[c])));
+    const tds = shownCols().map((c) => h("td", { class: "msg" }, r[c] == null ? "" : String(r[c])));
     for (const q of recipe.questions) {
       if (bad) { tds.push(h("td", null, "-")); continue; }
       const conf = r[q.name + "_confidence"];
@@ -386,7 +407,7 @@ $("f-review").addEventListener("click", () => setFilter("review"));
 async function download(format) {
   if (!last) return;
   try {
-    const r = await api("/api/export", { columns: last.out.columns, rows: last.out.rows, format });
+    const r = await api("/api/export?run=" + encodeURIComponent(last.out.run_id) + "&format=" + format);  // the server keeps the result
     const url = URL.createObjectURL(await r.blob());
     const a = h("a", { href: url, download: "decisions." + format });
     document.body.append(a);
@@ -418,6 +439,7 @@ function renderUse() {
     codeBlock(`"Run ${name} on this file."                  # Claude Desktop, Cursor (MCP)`));
 }
 $("rname").addEventListener("input", renderUse);
+$("cols").addEventListener("change", () => { colsEdited = true; updateRun(); });
 for (const [el, evs] of [[$("qs"), ["input", "change", "click"]], [$("thr"), ["input"]], [$("cols"), ["change"]], [$("addq"), ["click"]]]) {
   evs.forEach((ev) => el.addEventListener(ev, renderUse));  // any edit to the definition can make the saved copy differ
 }

@@ -8,6 +8,7 @@ import csv
 import io
 import json
 import re
+import secrets
 import socket
 import threading
 import time
@@ -16,9 +17,10 @@ import zipfile
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from urllib.parse import parse_qs
 
 from . import __version__
-from .recipe import (NAME_RE, Recipe, _rows, list_recipes, recipes_dir, rows_from_csv_text, rows_from_lines, write_csv,
+from .recipe import (NAME_RE, Recipe, _rows, check_options, list_recipes, recipes_dir, rows_from_csv_text, rows_from_lines, write_csv,
                      write_xlsx)
 
 APP = Path(__file__).parent / "app"
@@ -38,6 +40,8 @@ SECURITY = {"X-Content-Type-Options": "nosniff", "Cache-Control": "no-store", "R
             "X-Frame-Options": "DENY"}
 RUN_RE = re.compile(r"^/recipes/([^/]+)/run$")
 RECIPE_RE = re.compile(r"^/api/recipes/([^/]+)$")
+RUN_ID_RE = re.compile(r"^[0-9a-f]{16}$")
+KEEP_RUNS = 8  # finished runs kept in memory for download, oldest dropped first
 
 
 class _Limit(Exception):
@@ -186,15 +190,24 @@ def _run(model, recipe, columns, rows):
     _check(columns, rows)
     if len(rows) * len(recipe.questions) > MAX_DECISIONS:
         raise _Limit(f"too many decisions: the limit is {MAX_DECISIONS:,} (rows times questions)")
+    recipe.check_columns(columns)
     t = time.perf_counter()
-    out, failed = [], []
-    for i, row in enumerate(rows):  # same as recipe.run, but a failed row is known by position, not by a column name the data may also use
-        res = recipe.decide_row(model, row)
-        if "error" in res:  # decide_row sets it only on failure, and a question may not be named "error"
-            failed.append(i)
-        out.append({**row, **res})
+    failed = []  # by position: a source column may also be called "error"
+    out = recipe.run(rows, model=model, failed=failed)
     return {"columns": recipe.output_columns(columns), "rows": out, "needs_review": sum(1 for r in out if r.get("needs_review")),
             "count": len(out), "failed": failed, "ms": round((time.perf_counter() - t) * 1000, 1)}
+
+
+def _file(cols, rows, fmt):
+    if fmt == "csv":
+        buf = io.StringIO()
+        write_csv(buf, cols, rows)
+        return "\ufeff".encode("utf-8") + buf.getvalue().encode("utf-8"), "text/csv; charset=utf-8", "decisions.csv"
+    if fmt == "xlsx":
+        buf = io.BytesIO()
+        write_xlsx(buf, cols, rows)
+        return buf.getvalue(), XLSX, "decisions.xlsx"
+    raise ValueError("format must be csv or xlsx")
 
 
 def _export(body):
@@ -205,15 +218,7 @@ def _export(body):
     _check(cols, rows)
     if len(set(cols)) != len(cols):  # a repeated name would write the same cell again and again
         raise ValueError("column names must be different")
-    if fmt == "csv":
-        buf = io.StringIO()
-        write_csv(buf, cols, rows)
-        return "\ufeff".encode("utf-8") + buf.getvalue().encode("utf-8"), "text/csv; charset=utf-8", "decisions.csv"
-    if fmt == "xlsx":
-        buf = io.BytesIO()
-        write_xlsx(buf, cols, rows)
-        return buf.getvalue(), XLSX, "decisions.xlsx"
-    raise ValueError("format must be csv or xlsx")
+    return _file(cols, rows, fmt)
 
 
 def _decide_args(req):
@@ -227,12 +232,7 @@ def _decide_args(req):
         raise ValueError("question must be non-empty text")
     if opts is None or opts == [] or opts == {}:  # no options: a yes or no question
         return state, question, None
-    if isinstance(opts, dict):
-        ok = all(isinstance(k, str) and k and isinstance(d, str) for k, d in opts.items())
-    else:
-        ok = isinstance(opts, list) and all(isinstance(o, str) and o for o in opts) and len(set(opts)) == len(opts)
-    if not ok or not 2 <= len(opts) <= 32:
-        raise ValueError("options must be 2 to 32 different, non-empty texts (a list or a {key: description} object)")
+    check_options(opts)
     return state, question, opts
 
 
@@ -312,16 +312,19 @@ class Handler(BaseHTTPRequestHandler):
         if not self._allowed(False):
             return
         try:
-            self._get(self.path.split("?", 1)[0])
+            path, _, query = self.path.partition("?")
+            self._get(path, parse_qs(query))
         except Exception:  # e.g. an unreadable recipe file: a fixed answer, never a closed connection
             self._err(500, "this computer could not read that")
 
-    def _get(self, path):
+    def _get(self, path, query):
         if path == "/api/status":
             m = self.server.model
             return self._json(200, {"model": "DecisionTune 1.0", "backend": getattr(m, "backend_name", "unknown"), "version": __version__})
         if path == "/api/recipes":
             return self._json(200, list_recipes())
+        if path == "/api/export":
+            return self._download(query)
         hit = RECIPE_RE.match(path)
         if hit:
             if not NAME_RE.fullmatch(hit[1]):
@@ -331,6 +334,18 @@ class Handler(BaseHTTPRequestHandler):
             except ValueError:
                 return self._err(404, "no such recipe")
         self._static(path)
+
+    def _download(self, query):
+        """A finished run, by the id /api/run gave: nothing is posted back, so every accepted run can be downloaded."""
+        rid = (query.get("run") or [""])[0]
+        run = RUN_ID_RE.fullmatch(rid) and self.server.runs.get(rid)
+        if not run:
+            return self._err(404, "that run is no longer kept: run it again to download it")
+        try:
+            data, ctype, name = _file(run["columns"], run["rows"], (query.get("format") or [""])[0])
+        except ValueError as e:
+            return self._err(400, str(e))
+        self._send(200, data, ctype, {"Content-Disposition": f'attachment; filename="{name}"'})
 
     def _static(self, path):
         rel = {"/": "index.html"}.get(path) or path.lstrip("/")
@@ -388,7 +403,7 @@ class Handler(BaseHTTPRequestHandler):
             req = json.loads(body)
             recipe = _recipe(req["recipe"])
             cols, rows = _read_input(req["input"])
-            return self._json(200, _run(m, recipe, cols, rows))
+            return self._json(200, self._ran(_run(m, recipe, cols, rows)))
         if path == "/api/preview":
             return self._json(200, _preview(*_read_input(json.loads(body)["input"])))
         if path == "/api/export":
@@ -400,7 +415,11 @@ class Handler(BaseHTTPRequestHandler):
         else:
             rows = _clean_rows(json.loads(body)["rows"])
             cols = _columns(rows)
-        self._json(200, _run(m, recipe, cols, rows))
+        self._json(200, self._ran(_run(m, recipe, cols, rows)))
+
+    def _ran(self, out):
+        out["run_id"] = self.server.keep_run(out)
+        return out
 
     @staticmethod
     def _save(recipe):
@@ -424,7 +443,16 @@ class _Server(ThreadingHTTPServer):
         if ":" in addr[0]:
             self.address_family = socket.AF_INET6
         self.slots = threading.BoundedSemaphore(MAX_ACTIVE)
+        self.runs, self.runs_lock = {}, threading.Lock()
         super().__init__(addr, handler)
+
+    def keep_run(self, out):
+        rid = secrets.token_hex(8)
+        with self.runs_lock:
+            self.runs[rid] = out
+            while len(self.runs) > KEEP_RUNS:
+                del self.runs[next(iter(self.runs))]  # dicts keep insertion order: the first is the oldest
+        return rid
 
     def process_request(self, request, client_address):  # runs in the accept loop: never blocks on a client
         if self.slots.acquire(blocking=False):

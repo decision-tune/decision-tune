@@ -308,3 +308,43 @@ def test_load_rejects_trailing_newline_name(home):
     (home / "recipes" / "t\n.json").write_text(json.dumps(spec()))
     with pytest.raises(ValueError):
         Recipe.load("t\n")
+
+
+# ---- GATE-fix1: one column check and one option check, shared by every surface
+def test_check_columns_names_every_missing_column():
+    r = Recipe.from_dict(spec(read=["subject", "message"]))
+    r.check_columns(["message", "subject", "extra"])
+    with pytest.raises(ValueError, match="^missing columns: subject, message$"):
+        r.check_columns(["text"])
+    Recipe.from_dict(spec(read=[])).check_columns([])  # read [] means all columns: nothing can be missing
+
+
+def test_run_never_sends_an_absent_column_to_the_model():
+    f = Fake(yes={"Is it?": 0.9})
+    with pytest.raises(ValueError, match="missing columns: a"):
+        Recipe.from_dict(spec()).run([{"text": "refund please"}], model=f)
+    assert f.calls == []
+    assert Recipe.from_dict(spec()).run([], model=f) == []  # no rows: nothing to check
+
+
+@pytest.mark.parametrize("bad", [["a"], [], ["", "b"], ["a", "a"], [str(i) for i in range(33)], {"a": "x"}, {"": "x", "b": "y"}, {"a": 1, "b": "y"}, "ab", 5])
+def test_check_options_rejects(bad):
+    from decision_tune.recipe import check_options
+
+    with pytest.raises(ValueError, match="options must be 2 to 32"):
+        check_options(bad)
+
+
+def test_check_options_accepts():
+    from decision_tune.recipe import check_options
+
+    check_options(["a", "b"])
+    check_options({"a": "A: x", "b": "B: y"})
+    check_options([str(i) for i in range(32)])
+
+
+def test_run_reports_failed_positions_apart_from_data():
+    f = Fake(yes=lambda n: 0.9 if n != 2 else (_ for _ in ()).throw(RuntimeError("boom")))
+    rows, failed = [{"a": "x", "error": "from data"}, {"a": "y", "error": "from data"}, {"a": "z"}], []
+    out = Recipe.from_dict(spec()).run(rows, model=f, failed=failed)
+    assert failed == [1] and out[0]["error"] == "from data" and out[1]["error"].startswith("RuntimeError")

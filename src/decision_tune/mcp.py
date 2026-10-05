@@ -14,7 +14,7 @@ import time
 import traceback
 
 from . import __version__
-from .recipe import Recipe, list_recipes, read_rows, write_csv, write_xlsx
+from .recipe import Recipe, check_options, list_recipes, read_rows, write_csv, write_xlsx
 
 VERSIONS = ("2025-06-18", "2025-03-26", "2024-11-05")
 INSTRUCTIONS = "DecisionTune picks an option or answers yes/no about a piece of text, on this computer."
@@ -132,9 +132,8 @@ class Server:
         if not isinstance(a.get("question"), str) or not a["question"].strip():
             raise ValueError("question is required: a non-empty string")
         opts = a.get("options")
-        if opts is not None and not (isinstance(opts, list) and all(isinstance(o, str) for o in opts)
-                                     or isinstance(opts, dict) and all(isinstance(v, str) for v in opts.values())):
-            raise ValueError("options must be a list of strings or an object of key to description string")
+        if opts is not None and opts != [] and opts != {}:  # no options: a yes or no question
+            check_options(opts)
         m, t = self.get_model(), time.perf_counter()
         if opts:
             out = m.choose(a["state"], a["question"], opts)
@@ -166,6 +165,7 @@ class Server:
             if not isinstance(rows, list) or not all(isinstance(x, dict) for x in rows):
                 raise ValueError("rows must be an array of objects")
             cols = list(dict.fromkeys(k for x in rows for k in x))
+        recipe.check_columns(cols)
         if len(rows) > MAX_ROWS or len(rows) * len(recipe.questions) > MAX_DECISIONS:
             raise ValueError(f"too much work in one run: at most {MAX_ROWS} rows and {MAX_DECISIONS} decisions; split the input")
         t = time.perf_counter()
