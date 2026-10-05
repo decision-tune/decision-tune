@@ -11,6 +11,7 @@ import io
 import json
 import os
 import re
+import tempfile
 from pathlib import Path
 
 NAME_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")
@@ -20,12 +21,12 @@ _model = None
 
 
 def recipes_dir():
-    home = os.environ.get("DECISION_TUNE_HOME")
-    return os.path.join(os.path.expanduser(home) if home else os.path.expanduser("~/.decision-tune"), "recipes")
+    home = os.environ.get("DECISION_TUNE_HOME")  # set but empty still counts as set
+    return os.path.join(os.path.expanduser(home if home is not None else "~/.decision-tune"), "recipes")
 
 
 def _name(v, what):
-    if not isinstance(v, str) or not NAME_RE.match(v):
+    if not isinstance(v, str) or not NAME_RE.fullmatch(v):
         raise ValueError(f"{what} name {v!r} must match {NAME_RE.pattern}")
     return v
 
@@ -50,7 +51,7 @@ class Recipe:
         if not isinstance(d, dict):
             raise ValueError("a recipe must be a JSON object")
         name = _name(d.get("name"), "recipe")
-        read = d.get("read") or []
+        read = d.get("read", [])
         if not isinstance(read, list) or not all(isinstance(c, str) and c for c in read):
             raise ValueError("read must be a list of column names")
         qs = d.get("questions")
@@ -72,6 +73,13 @@ class Recipe:
             out.append(item)
         if len({q["name"] for q in out}) < len(out):
             raise ValueError("question names must be unique")
+        owner = {"needs_review": None, "error": None}  # output field -> question that owns it (None = reserved)
+        for q in out:
+            for f in (q["name"], f"{q['name']}_confidence", f"{q['name']}_p_yes"):  # p_yes reserved for every type
+                if f in owner:
+                    who = "a reserved field" if owner[f] is None else f"question {owner[f]!r}"
+                    raise ValueError(f"question {q['name']!r}: output field {f!r} clashes with {who}")
+                owner[f] = q["name"]
         rb = d.get("review_below", 0.6)
         if isinstance(rb, bool) or not isinstance(rb, (int, float)) or not 0 <= rb <= 1:
             raise ValueError("review_below must be a number from 0 to 1")
@@ -81,7 +89,7 @@ class Recipe:
     def load(cls, name_or_path):
         p = os.path.expanduser(str(name_or_path))
         if not (p.endswith(".json") and os.path.isfile(p)):
-            p = next((str(f) for f in (Path(recipes_dir(), f"{p}.json"), BUILTIN / f"{p}.json") if NAME_RE.match(p) and f.is_file()), None)
+            p = next((str(f) for f in (Path(recipes_dir(), f"{p}.json"), BUILTIN / f"{p}.json") if NAME_RE.fullmatch(p) and f.is_file()), None)
         if p is None:
             have = ", ".join(r["name"] for r in list_recipes()) or "none"
             raise ValueError(f"no recipe {str(name_or_path)!r}; available: {have}")
@@ -96,19 +104,26 @@ class Recipe:
                 "review_below": self.review_below}
 
     def save(self, directory=None):
+        _name(self.name, "recipe")  # the attribute is mutable and the constructor unchecked: recheck before touching disk
         d = directory or recipes_dir()
         os.makedirs(d, exist_ok=True)
         path = os.path.join(d, f"{self.name}.json")
-        with open(path + ".tmp", "w", encoding="utf-8") as f:
-            json.dump(self.to_dict(), f, indent=2, ensure_ascii=False)
-            f.write("\n")
-        os.replace(path + ".tmp", path)  # ponytail: a user copy shadows a built-in of the same name; delete the file to unshadow
+        fd, tmp = tempfile.mkstemp(dir=d, prefix=f".{self.name}.", suffix=".tmp")  # unique, O_EXCL, never a followed symlink
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                json.dump(self.to_dict(), f, indent=2, ensure_ascii=False)
+                f.write("\n")
+            os.replace(tmp, path)  # ponytail: a user copy shadows a built-in of the same name; delete the file to unshadow
+        except BaseException:
+            if os.path.lexists(tmp):
+                os.unlink(tmp)
+            raise
         return path
 
     def state(self, row):
         cols = self.read or list(row)
         cell = lambda c: "" if row.get(c) is None else row[c]
-        return cell(cols[0]) if len(cols) == 1 else {c: cell(c) for c in cols}
+        return str(cell(cols[0])) if len(cols) == 1 else {c: cell(c) for c in cols}  # one column = that cell's text
 
     def decide_row(self, model, row):
         """Answers for one row (dict of column -> value). A model error flags the row instead of raising."""
@@ -225,9 +240,8 @@ def write_xlsx(path, columns, rows):
     import openpyxl
     from openpyxl.cell.cell import ILLEGAL_CHARACTERS_RE
 
-    def cell(v):
-        v = safe_cell(v)
-        return ILLEGAL_CHARACTERS_RE.sub("", v) if isinstance(v, str) else v
+    def cell(v):  # strip first: removing a control char can expose a leading = + - @
+        return safe_cell(ILLEGAL_CHARACTERS_RE.sub("", v) if isinstance(v, str) else v)
 
     wb = openpyxl.Workbook()
     ws = wb.active

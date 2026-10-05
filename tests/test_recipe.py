@@ -2,7 +2,9 @@ import csv
 import io
 import json
 import os
+import threading
 
+import openpyxl
 import pytest
 
 from decision_tune import Recipe, list_recipes
@@ -53,6 +55,22 @@ def res(choice, conf):
     (spec(questions=[]), "questions"),
     (spec(questions=[{"name": "q", "type": "yes_no", "question": "?"}] * 2), "unique"),
     (spec(review_below=1.5), "review_below"),
+    (spec(name="t\n"), "name"),  # 8: fullmatch, not match
+    (spec(questions=[{"name": "q\n", "type": "yes_no", "question": "?"}]), "name"),
+    (spec(read=False), "read"),  # 2: wrong types are not "all columns"
+    (spec(read=0), "read"),
+    (spec(read={}), "read"),
+    (spec(read=None), "read"),
+    (spec(read="a"), "read"),
+    # 1 + accept 2: the whole output namespace, reserved fields included
+    (spec(questions=[{"name": "q", "type": "yes_no", "question": "?"},
+                     {"name": "q_confidence", "type": "yes_no", "question": "?"}]), "clashes"),
+    (spec(questions=[{"name": "q", "type": "yes_no", "question": "?"},
+                     {"name": "q_p_yes", "type": "yes_no", "question": "?"}]), "clashes"),
+    (spec(questions=[{"name": "q", "type": "choose", "question": "?", "options": ["a", "b"]},
+                     {"name": "q_confidence", "type": "yes_no", "question": "?"}]), "clashes"),
+    (spec(questions=[{"name": "needs_review", "type": "yes_no", "question": "?"}]), "needs_review"),
+    (spec(questions=[{"name": "error", "type": "yes_no", "question": "?"}]), "error"),
 ])
 def test_validation_errors(bad, msg):
     with pytest.raises(ValueError, match=msg):
@@ -87,7 +105,6 @@ def test_save_and_list_user_shadows_builtin(home):
 def test_read_rows_csv_xlsx_folder(tmp_path):
     cols, rows = read_rows(DATA)
     assert cols == ["subject", "message"] and len(rows) == 8 and rows[4]["message"].startswith("Thanks, the")
-    openpyxl = pytest.importorskip("openpyxl")
     wb = openpyxl.Workbook()
     wb.active.append(["a", "b"])
     wb.active.append(["x", 1])
@@ -114,30 +131,49 @@ def test_formula_guard_csv_and_xlsx(tmp_path):
     assert list(csv.reader(io.StringIO(buf.getvalue()))) == [["a", "b"], ["'=HYPERLINK(1)", "fine"]]
     write_csv(str(tmp_path / "o.csv"), ["a", "b"], rows)
     assert (tmp_path / "o.csv").read_text().splitlines()[1].startswith("'=")
-    openpyxl = pytest.importorskip("openpyxl")
     write_xlsx(str(tmp_path / "o.xlsx"), ["a", "b"], rows)
     ws = openpyxl.load_workbook(tmp_path / "o.xlsx").active
     assert [c.value for c in ws[2]] == ["'=HYPERLINK(1)", "fine"] and ws["A2"].data_type == "s"
 
 
 # 2. PIN: the model is consulted for every question of every row
-def test_run_calls_model_per_question_per_row():
+class PerRow(Fake):
+    """Distinct scripted answers per row, keyed on the row's subject, so reuse of another row's answers shows up."""
+
+    def __init__(self, subjects):
+        super().__init__()
+        self.idx = {s: i for i, s in enumerate(subjects)}
+
+    def choose(self, state, question, options):
+        self.calls.append(("choose", state, question, options))
+        i, keys = self.idx[state["subject"]], list(options)
+        return res(keys[i % len(keys)] if "team" in question else keys[-1 - i % len(keys)], 0.59 if i == 3 else 0.7 + i / 100)
+
+    def yes_no(self, state, question):
+        self.calls.append(("yes_no", state, question))
+        return 0.62 + 0.04 * self.idx[state["subject"]]
+
+
+def test_run_calls_model_per_question_per_row(home):
     cols, rows = read_rows(DATA)
     r = Recipe.load("support-triage")
-    q = {x["name"]: x["question"] for x in r.questions}
-    fake = Fake(choose={q["team"]: res("billing", 0.91), q["tone"]: res("neu", 0.82)}, yes={q["refund"]: 0.97})
+    fake = PerRow([x["subject"] for x in rows])
     seen = []
     out = r.run(rows, model=fake, progress=lambda i, n: seen.append((i, n)))
     assert len(out) == 8 and len(fake.calls) == 24
-    assert seen[-1] == (8, 8)
+    assert seen == [(i, 8) for i in range(1, 9)]
+    team, refund, tone = r.questions
     for i, row in enumerate(rows):
-        assert fake.calls[3 * i][1] == {"subject": row["subject"], "message": row["message"]}
-    assert fake.calls[0][3] == r.questions[0]["options"] and fake.calls[2][3] == r.questions[2]["levels"]
-    o = out[0]
-    assert o["subject"] == "Order #4417"
-    assert (o["team"], o["team_confidence"]) == ("billing", 0.91)
-    assert (o["refund"], o["refund_p_yes"], o["refund_confidence"]) == ("yes", 0.97, 0.97)
-    assert (o["tone"], o["tone_confidence"]) == ("neu", 0.82) and o["needs_review"] is False
+        state = {"subject": row["subject"], "message": row["message"]}
+        got = fake.calls[3 * i:3 * i + 3]
+        assert [(c[0], c[1], c[2]) for c in got] == [("choose", state, team["question"]), ("yes_no", state, refund["question"]),
+                                                      ("choose", state, tone["question"])]
+        assert got[0][3] == team["options"] and got[2][3] == tone["levels"]
+        t, k = list(team["options"])[i % 3], list(tone["levels"])[-1 - i % 3]
+        c = 0.59 if i == 3 else round(0.7 + i / 100, 4)
+        p = round(0.62 + 0.04 * i, 4)
+        assert out[i] == {**row, "team": t, "team_confidence": c, "refund": "yes", "refund_p_yes": p, "refund_confidence": p,
+                          "tone": k, "tone_confidence": c, "needs_review": i == 3}
     assert r.output_columns(cols) == ["subject", "message", "team", "team_confidence", "refund", "refund_p_yes",
                                       "refund_confidence", "tone", "tone_confidence", "needs_review", "error"]
 
@@ -163,6 +199,18 @@ def test_needs_review_threshold():
     assert go(0.61, 0.9)["needs_review"] is False
     d = go(0.95, 0.45)
     assert d["needs_review"] is True and d["y"] == "no" and d["y_confidence"] == 0.55 and d["y_p_yes"] == 0.45
+    # equality is NOT below; the comparison uses the raw value, not the 4-place rounded one
+    assert go(0.6, 0.9)["needs_review"] is False
+    assert go(0.59996, 0.9)["needs_review"] is True and go(0.59996, 0.9)["c_confidence"] == 0.6
+    assert go(0.60004, 0.9)["needs_review"] is False
+    assert go(0.95, 0.6)["needs_review"] is False and go(0.95, 0.4)["y_confidence"] == 0.6
+    assert go(0.95, 0.59996)["needs_review"] is True and go(0.95, 0.40004)["needs_review"] is True
+    assert go(0.95, 0.60004)["needs_review"] is False and go(0.95, 0.39996)["needs_review"] is False
+    # the p_yes == 0.5 decision boundary: "yes", confidence 0.5
+    d = go(0.95, 0.5)
+    assert d["y"] == "yes" and d["y_confidence"] == 0.5 and d["needs_review"] is True
+    r.review_below = 0.5
+    assert go(0.95, 0.5)["needs_review"] is False and go(0.95, 0.4999)["y"] == "no"
 
 
 def test_model_error_flags_row_instead_of_crashing():
@@ -171,3 +219,92 @@ def test_model_error_flags_row_instead_of_crashing():
             raise ValueError("sequence of 9000 tokens exceeds the 8192-token context limit")
     out = Recipe.from_dict(spec()).run([{"a": "x"}, {"a": "y"}], model=Boom())
     assert len(out) == 2 and out[0]["needs_review"] is True and "9000 tokens" in out[0]["error"]
+
+
+# fix1 regression tests
+def test_output_namespace_clash_names_the_field():
+    with pytest.raises(ValueError, match="'q_confidence'.*clashes"):
+        Recipe.from_dict(spec(questions=[{"name": "q", "type": "yes_no", "question": "?"},
+                                         {"name": "q_confidence", "type": "yes_no", "question": "?"}]))
+    with pytest.raises(ValueError, match="'needs_review'.*reserved"):
+        Recipe.from_dict(spec(questions=[{"name": "needs_review", "type": "yes_no", "question": "?"}]))
+    Recipe.from_dict(spec(questions=[{"name": "q", "type": "yes_no", "question": "?"},
+                                     {"name": "other", "type": "yes_no", "question": "?"}]))
+
+
+def test_read_missing_means_all_columns():
+    d = spec()
+    del d["read"]
+    assert Recipe.from_dict(d).read == []
+
+
+def test_single_column_state_is_text():
+    r, f = Recipe.from_dict(spec(read=["a"])), Fake(yes={"Is it?": 0.9})
+    r.decide_row(f, {"a": 42})
+    r.decide_row(f, {"a": 4.5})
+    r.decide_row(f, {"a": None})
+    assert [c[1] for c in f.calls] == ["42", "4.5", ""]
+    r.decide_row(f, {"a": True})
+    assert f.calls[-1][1] == "True"
+
+
+def test_empty_home_is_set_not_unset(monkeypatch, tmp_path):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.delenv("DECISION_TUNE_HOME", raising=False)
+    assert recipes_dir() == str(tmp_path / ".decision-tune" / "recipes")
+    monkeypatch.setenv("DECISION_TUNE_HOME", "")
+    assert recipes_dir() == os.path.join("", "recipes") != str(tmp_path / ".decision-tune" / "recipes")
+
+
+def test_xlsx_strips_illegal_chars_before_formula_guard(tmp_path):
+    write_xlsx(str(tmp_path / "o.xlsx"), ["\x01=H", "b"], [{"\x01=H": "\x01=1+1", "b": "\x02\x00@x"}])
+    ws = openpyxl.load_workbook(tmp_path / "o.xlsx").active
+    assert [c.value for c in ws[1]] == ["'=H", "b"] and ws["A1"].data_type == "s"
+    assert [c.value for c in ws[2]] == ["'=1+1", "'@x"]
+    assert ws["A2"].data_type == "s" and ws["B2"].data_type == "s"
+
+
+def test_save_revalidates_name_at_the_filesystem_boundary(tmp_path):
+    out = tmp_path / "out"
+    r = Recipe("../outside", ["a"], spec()["questions"], 0.6)
+    with pytest.raises(ValueError, match="name"):
+        r.save(str(out))
+    ok = Recipe.from_dict(spec())
+    ok.name = "../outside"
+    with pytest.raises(ValueError, match="name"):
+        ok.save(str(out))
+    assert not (tmp_path / "outside.json").exists() and not out.exists()
+
+
+def test_save_uses_unique_exclusive_temp_file(tmp_path):
+    out, victim = tmp_path / "out", tmp_path / "victim.txt"
+    out.mkdir()
+    victim.write_text("keep")
+    os.symlink(victim, out / "t.json.tmp")  # a planted predictable temp name must not redirect the write
+    path = Recipe.from_dict(spec()).save(str(out))
+    assert victim.read_text() == "keep" and json.load(open(path))["name"] == "t"
+    assert sorted(os.listdir(out)) == ["t.json", "t.json.tmp"]  # only the planted link is left, no stray temp file
+
+
+def test_concurrent_saves_do_not_collide(tmp_path):
+    r, errs, gate = Recipe.from_dict(spec()), [], threading.Barrier(8)
+
+    def go():
+        gate.wait()
+        try:
+            for _ in range(30):
+                r.save(str(tmp_path))
+        except Exception as e:
+            errs.append(e)
+
+    ts = [threading.Thread(target=go) for _ in range(8)]
+    [t.start() for t in ts]
+    [t.join() for t in ts]
+    assert errs == [] and json.load(open(tmp_path / "t.json"))["name"] == "t" and os.listdir(tmp_path) == ["t.json"]
+
+
+def test_load_rejects_trailing_newline_name(home):
+    (home / "recipes").mkdir()
+    (home / "recipes" / "t\n.json").write_text(json.dumps(spec()))
+    with pytest.raises(ValueError):
+        Recipe.load("t\n")
