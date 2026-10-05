@@ -147,6 +147,8 @@ def _main(argv=None):
     rcs.add_parser("show", help="print a recipe as JSON").add_argument("name")
     rcs.add_parser("new", help="save a copy of support-triage under a new name, to edit").add_argument("name")
     mp = sub.add_parser("mcp", help="MCP server over stdio, for AI assistants")
+    mp.add_argument("--allow", action="append", default=[], metavar="DIR",
+                    help="only read and write inside this folder (repeatable; also DECISION_TUNE_ROOTS)")
     common(mp)
     args = ap.parse_args(argv)
 
@@ -164,7 +166,11 @@ def _main(argv=None):
     if args.cmd == "recipe":
         return _recipe(args)
     if args.cmd == "mcp":
-        return mcp.run_stdio(lambda: _mcp_model(args))
+        try:
+            roots = mcp.resolve_roots([r for r in os.environ.get("DECISION_TUNE_ROOTS", "").split(os.pathsep) if r] + args.allow)
+        except ValueError as e:
+            raise SystemExit(str(e)) from None
+        return mcp.run_stdio(lambda: _mcp_model(args), roots=roots or None)
     if args.cmd == "ask" and args.option:
         check_options(args.option)  # before the model loads
     m = _load(args)

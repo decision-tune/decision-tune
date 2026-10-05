@@ -27,6 +27,8 @@ pip install "decision-tune[mlx]"        # adds MLX on Apple silicon; the package
 pip install "decision-tune[onnx]"       # adds onnxruntime; use --backend onnx
 ```
 
+MLX needs Python 3.11 or newer.
+
 Docker (CPU):
 
 ```bash
@@ -166,6 +168,18 @@ If the client cannot find the command, give the full path (`which decisiontune` 
 - `decide`: pick one option, or answer yes/no, about a piece of text.
 - `run_recipe`: run a recipe on a file, a folder, or rows that you pass in. It can save all result rows to a `.csv` or `.xlsx` file. It replaces an existing file only if the name ends with `-decided.csv` or `-decided.xlsx`.
 - `list_recipes`: list the recipes.
+
+**Limit the folders.** Add `--allow` to name the folders the assistant may use. It can then read and write only inside them. Without `--allow`, the tools can read any file you can.
+
+```json
+{
+  "mcpServers": {
+    "decisiontune": {"command": "decisiontune", "args": ["mcp", "--allow", "/Users/you/Documents/decisions"]}
+  }
+}
+```
+
+Repeat `--allow` for more folders, or set `DECISION_TUNE_ROOTS` (folders separated by `:` on Mac and Linux). A path outside them gets a one-line error.
 
 ## Local HTTP endpoint
 

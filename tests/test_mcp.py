@@ -60,7 +60,7 @@ class Scripted:
         return self.yes.pop(0)
 
 
-def rpc(*msgs, factory=None):
+def rpc(*msgs, factory=None, roots=None):
     """Send each message (dict or raw str) as one line; return (parsed response lines, raw stdout, factory call count)."""
     fake, n = Fake(), []
 
@@ -70,7 +70,7 @@ def rpc(*msgs, factory=None):
 
     lines = "".join((m if isinstance(m, str) else json.dumps(m)) + "\n" for m in msgs)
     out = io.StringIO()
-    run_stdio(make, io.StringIO(lines), out)
+    run_stdio(make, io.StringIO(lines), out, **({} if roots is None else {"roots": roots}))
     return [strict(x) for x in out.getvalue().splitlines()], out.getvalue(), len(n)
 
 
@@ -116,6 +116,109 @@ def test_tools_list():
         assert t["description"] and t["inputSchema"]["type"] == "object"
     assert tools[0]["inputSchema"]["required"] == ["state", "question"]
     assert tools[1]["inputSchema"]["required"] == ["recipe"]
+
+
+def test_tool_annotations():
+    tools = {t["name"]: t for t in one(req(1, "tools/list"))["result"]["tools"]}
+    assert tools["decide"]["annotations"] == {"readOnlyHint": True, "openWorldHint": False}
+    assert tools["list_recipes"]["annotations"] == {"readOnlyHint": True, "openWorldHint": False}
+    assert tools["run_recipe"]["annotations"] == {"readOnlyHint": False, "destructiveHint": False, "idempotentHint": False,
+                                                  "openWorldHint": False}
+
+
+def _refused(msg):
+    res = msg["result"]
+    t = res["content"][0]["text"]
+    assert res["isError"] is True and t.startswith("Path is outside the allowed folders:") and "--allow" in t and "\n" not in t, t
+
+
+def _root(tmp_path):
+    root = tmp_path / "root"
+    root.mkdir()
+    return root
+
+
+def test_roots_allow_inside_and_builtin_recipe_name(tmp_path):
+    root = _root(tmp_path)
+    (root / "t.csv").write_bytes(open(DATA, "rb").read())
+    (res,), _, _ = rpc(call(1, "run_recipe", recipe="support-triage", input_path=str(root / "t.csv")), roots=[str(root)])
+    assert res["result"]["isError"] is False and res["result"]["structuredContent"]["count"] == 8
+
+
+def test_roots_inside_tickets_dir_happy_path():
+    (res,), _, _ = rpc(call(1, "run_recipe", recipe="support-triage", input_path=DATA), roots=[os.path.dirname(DATA)])
+    assert res["result"]["structuredContent"]["count"] == 8
+
+
+def test_roots_refuse_input_file_outside(tmp_path):
+    root = _root(tmp_path)
+    (res,), _, _ = rpc(call(1, "run_recipe", recipe="support-triage", input_path=DATA), roots=[str(root)])
+    _refused(res)
+    assert str(DATA) in res["result"]["content"][0]["text"]
+
+
+def test_roots_refuse_prefix_sibling(tmp_path):
+    root, evil = _root(tmp_path), tmp_path / "rootevil"
+    evil.mkdir()
+    (evil / "t.csv").write_bytes(open(DATA, "rb").read())
+    (res,), _, _ = rpc(call(1, "run_recipe", recipe="support-triage", input_path=str(evil / "t.csv")), roots=[str(root)])
+    _refused(res)
+
+
+def test_roots_block_symlink_escape(tmp_path):
+    root = _root(tmp_path)
+    (root / "a.txt").write_text("my order is late")
+    outside = tmp_path / "secret.txt"
+    outside.write_text("top secret")
+    (root / "leak.txt").symlink_to(outside)
+    (res,), _, _ = rpc(call(1, "run_recipe", recipe={"name": "x", "read": ["text"], "questions": [{"name": "q", "type": "yes_no", "question": "Late?"}]},
+                           input_path=str(root)), roots=[str(root)])
+    _refused(res)
+    assert "top secret" not in json.dumps(res)
+    (root / "t.csv").symlink_to(DATA)
+    (link,), _, _ = rpc(call(1, "run_recipe", recipe="support-triage", input_path=str(root / "t.csv")), roots=[str(root)])
+    _refused(link)
+
+
+def test_roots_refuse_output_outside(tmp_path):
+    root, other = _root(tmp_path), tmp_path / "other"
+    other.mkdir()
+    (res,), _, _ = rpc(call(1, "run_recipe", recipe="support-triage", rows=[{"subject": "s", "message": "b"}],
+                           output_path=str(other / "o.csv")), roots=[str(root)])
+    _refused(res)
+    assert not (other / "o.csv").exists()
+    link = root / "esc"
+    link.symlink_to(other)
+    (res,), _, _ = rpc(call(1, "run_recipe", recipe="support-triage", rows=[{"subject": "s", "message": "b"}],
+                           output_path=str(link / "o.csv")), roots=[str(root)])
+    _refused(res)
+    assert not (other / "o.csv").exists()
+
+
+def test_roots_refuse_recipe_json_outside_but_names_work(tmp_path):
+    root = _root(tmp_path)
+    rp = tmp_path / "mine.json"
+    rp.write_text(json.dumps({"name": "mine", "read": ["subject"], "questions": [{"name": "q", "type": "yes_no", "question": "Late?"}]}))
+    (res,), _, _ = rpc(call(1, "run_recipe", recipe=str(rp), rows=[{"subject": "s"}]), roots=[str(root)])
+    _refused(res)
+    (ok,), _, _ = rpc(call(1, "run_recipe", recipe="support-triage", rows=[{"subject": "s", "message": "b"}]), roots=[str(root)])
+    assert ok["result"]["isError"] is False
+
+
+def test_no_roots_is_unchanged_and_warns(capsys):
+    (res,), _, _ = rpc(call(1, "run_recipe", recipe="support-triage", input_path=DATA))
+    assert res["result"]["structuredContent"]["count"] == 8
+    assert "no --allow folders set; tools can read any .csv, .xlsx, .txt or .md file you can read." in capsys.readouterr().err
+
+
+def test_roots_set_no_warning(tmp_path, capsys):
+    rpc(req(1, "ping"), roots=[str(_root(tmp_path))])
+    assert "no --allow" not in capsys.readouterr().err
+
+
+def test_missing_root_is_a_startup_error(tmp_path):
+    with pytest.raises(ValueError, match="does not exist"):
+        rpc(req(1, "ping"), roots=[str(tmp_path / "nope")])
 
 
 def test_decide_choose():

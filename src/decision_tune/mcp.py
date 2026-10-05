@@ -35,7 +35,8 @@ TOOLS = [
          "question": {"type": "string", "description": "What to decide, as one sentence."},
          "options": {"type": ["array", "object"], "items": {"type": "string"}, "additionalProperties": {"type": "string"},
                      "description": "Optional. A list of option strings, or an object of key to short description. Omit for yes/no."}},
-         "required": ["state", "question"]}},
+         "required": ["state", "question"]},
+     "annotations": {"readOnlyHint": True, "openWorldHint": False}},
     {"name": "run_recipe",
      "description": ("Run a saved recipe (a set of questions) on every row of a .csv or .xlsx file, a folder of .txt/.md files, or rows "
                      "you pass in. Use list_recipes to see the names. Returns the answers and which rows need a person to review. "
@@ -46,8 +47,10 @@ TOOLS = [
          "rows": {"type": "array", "items": {"type": "object"}, "description": "Rows to decide on, as objects of column to value."},
          "output_path": {"type": "string", "description": ("Optional. Write all result rows to this .csv or .xlsx. "
                                                            "An existing file is only replaced if its name ends with -decided.csv or -decided.xlsx.")}},
-         "required": ["recipe"]}},
-    {"name": "list_recipes", "description": "List the saved and built-in recipes.", "inputSchema": {"type": "object", "properties": {}}},
+         "required": ["recipe"]},
+     "annotations": {"readOnlyHint": False, "destructiveHint": False, "idempotentHint": False, "openWorldHint": False}},
+    {"name": "list_recipes", "description": "List the saved and built-in recipes.", "inputSchema": {"type": "object", "properties": {}},
+     "annotations": {"readOnlyHint": True, "openWorldHint": False}},
 ]
 
 
@@ -65,6 +68,22 @@ def _path(p, what):
     if not isinstance(p, str) or not p.strip():
         raise ValueError(f"{what} must be a non-empty string")
     return os.path.abspath(os.path.expanduser(p))
+
+
+def resolve_roots(roots):
+    """Real paths of the allowed folders; a folder that does not exist is an error."""
+    out = []
+    for r in roots:
+        p = os.path.realpath(os.path.expanduser(r))
+        if not os.path.isdir(p):
+            raise ValueError(f"--allow folder does not exist: {r}")
+        out.append(p)
+    return out
+
+
+def _inside(p, roots):
+    p = os.path.realpath(p)  # follows symlinks to the real target
+    return any(os.path.commonpath([p, r]) == r for r in roots)  # commonpath, so /a/b does not admit /a/bc
 
 
 def _check_output(p):
@@ -118,8 +137,13 @@ def _write_output(p, write, columns, rows):
 
 
 class Server:
-    def __init__(self, model_factory):
-        self.factory, self.model = model_factory, None
+    def __init__(self, model_factory, roots=None):
+        self.factory, self.model, self.roots = model_factory, None, roots
+
+    def allow(self, p):
+        """Refuse a path outside the allowed folders; with no folders set, everything is allowed."""
+        if self.roots and not _inside(p, self.roots):
+            raise ValueError(f"Path is outside the allowed folders: {p}. Add it with --allow.")
 
     def get_model(self):
         if self.model is None:
@@ -150,14 +174,24 @@ class Server:
         if isinstance(r, dict):
             recipe = Recipe.from_dict(r)
         elif isinstance(r, str) and r:
+            if r.endswith(".json"):  # a path; recipe names stay allowed
+                self.allow(_path(r, "recipe"))
             recipe = Recipe.load(r)
         else:
             raise ValueError("recipe is required: a name or a recipe object")
         if ("input_path" in a) == ("rows" in a):
             raise ValueError("give exactly one of input_path or rows")
         out_path = _check_output(a["output_path"]) if a.get("output_path") is not None else None
+        if out_path:
+            self.allow(os.path.dirname(out_path))
+            self.allow(out_path)
         if "input_path" in a:
             src = _path(a["input_path"], "input_path")
+            self.allow(src)
+            if self.roots and os.path.isdir(src):  # each entry may be a symlink out of the folder
+                for f in os.scandir(src):
+                    if f.name.lower().endswith((".txt", ".md")):
+                        self.allow(f.path)
             _input_file(src)
             cols, rows = read_rows(src)
         else:
@@ -228,8 +262,11 @@ def _no_constant(c):
     raise ValueError(f"{c} is not valid JSON")
 
 
-def run_stdio(model_factory, stdin=sys.stdin, stdout=sys.stdout):
-    srv, out, saved = Server(model_factory), stdout, None
+def run_stdio(model_factory, stdin=sys.stdin, stdout=sys.stdout, roots=None):
+    roots = resolve_roots(roots) if roots else None
+    if not roots:
+        print("decisiontune mcp: no --allow folders set; tools can read any .csv, .xlsx, .txt or .md file you can read.", file=sys.stderr)
+    srv, out, saved = Server(model_factory, roots), stdout, None
     if stdin is sys.stdin and hasattr(stdin, "reconfigure"):
         stdin.reconfigure(encoding="utf-8")
     if out is sys.stdout:

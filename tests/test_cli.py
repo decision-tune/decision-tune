@@ -313,7 +313,7 @@ def test_recipes_and_recipe_commands(env, tmp_path, capsys):
 
 def test_mcp_wiring_and_consent(env, monkeypatch):
     seen = []
-    monkeypatch.setattr(mcp, "run_stdio", lambda factory: seen.append(factory))
+    monkeypatch.setattr(mcp, "run_stdio", lambda factory, roots=None: seen.append(factory))
     cli.main(["mcp"])
     assert isinstance(seen[-1](), Fake) and env[-1][2]["yes"] is None  # no consent given: the loader must not be told yes
     cli.main(["mcp", "--yes"])
@@ -375,3 +375,25 @@ def test_run_counts_failed_rows_by_execution_not_by_an_error_column(env, tmp_pat
     monkeypatch.setattr(Fake, "yes_no", yes_no)
     cli.main(["run", str(r), str(src), "-o", str(tmp_path / "b.csv")])
     assert "1 rows failed" in capsys.readouterr().err
+
+
+def test_mcp_allow_wiring(env, monkeypatch, tmp_path):
+    a, b, c = (tmp_path / n for n in "abc")
+    for d in (a, b, c):
+        d.mkdir()
+    seen = []
+    monkeypatch.setattr(mcp, "run_stdio", lambda factory, roots=None: seen.append(roots))
+    monkeypatch.delenv("DECISION_TUNE_ROOTS", raising=False)
+    cli.main(["mcp"])
+    assert seen[-1] is None
+    cli.main(["mcp", "--allow", str(a), "--allow", str(b)])
+    assert seen[-1] == [os.path.realpath(a), os.path.realpath(b)]
+    monkeypatch.setenv("DECISION_TUNE_ROOTS", str(c))
+    cli.main(["mcp", "--allow", str(a)])
+    assert seen[-1] == [os.path.realpath(c), os.path.realpath(a)]
+
+
+def test_mcp_allow_missing_folder_is_a_one_line_error(env, monkeypatch, tmp_path):
+    monkeypatch.setattr(mcp, "run_stdio", lambda factory, roots=None: None)
+    with pytest.raises(SystemExit, match="does not exist"):
+        cli.main(["mcp", "--allow", str(tmp_path / "nope")])

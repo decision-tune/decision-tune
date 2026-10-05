@@ -127,7 +127,7 @@ results = Recipe.load("support-triage").run([{"subject": "Broken mug", "message"
 {"mcpServers": {"decisiontune": {"command": "decisiontune", "args": ["mcp"]}}}
 ```
 
-The server has three tools: `decide`, `run_recipe` and `list_recipes`. It runs on your computer.
+The server has three tools: `decide`, `run_recipe` and `list_recipes`. It runs on your computer. Add `--allow FOLDER` to `args` to limit the assistant to that folder; without it the tools can read any file you can.
 
 **Backends.** PyTorch is the default. On Apple silicon, `pip install "decision-tune[mlx]"` adds an MLX backend. The package selects it automatically. The MLX backend uses laya-mlx (Apache-2.0). `pip install "decision-tune[onnx]"` adds onnxruntime. To use it, set `--backend onnx` or `backend="onnx"`. All three backends read the files in this repo. They give the same answers on our parity rows.
 
