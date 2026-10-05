@@ -1,0 +1,116 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>DecisionTune</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%23da3200'/%3E%3Crect x='6' y='6.5' width='20' height='2.2' rx='1.1' fill='%23fff'/%3E%3Crect x='6' y='15' width='10' height='2.2' rx='1.1' fill='%23fff' opacity='.55'/%3E%3Crect x='6' y='23.2' width='6' height='2.2' rx='1.1' fill='%23fff' opacity='.55'/%3E%3C/svg%3E">
+<link rel="stylesheet" href="app.css">
+</head>
+<body>
+<header class="appbar">
+  <span class="mark"><img src="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%23da3200'/%3E%3Crect x='6' y='6.5' width='20' height='2.2' rx='1.1' fill='%23fff'/%3E%3Crect x='6' y='15' width='10' height='2.2' rx='1.1' fill='%23fff' opacity='.55'/%3E%3Crect x='6' y='23.2' width='6' height='2.2' rx='1.1' fill='%23fff' opacity='.55'/%3E%3C/svg%3E" width="24" height="24" alt="">DecisionTune</span>
+  <div class="status" id="status" aria-live="polite"><span>Starting</span></div>
+</header>
+<nav class="tabs" role="tablist" aria-label="Sections">
+  <button type="button" role="tab" id="t-try" aria-controls="try" aria-selected="true" data-p="try">Try it</button>
+  <button type="button" role="tab" id="t-run" aria-controls="run" aria-selected="false" data-p="run">Run on many items</button>
+  <button type="button" role="tab" id="t-recipes" aria-controls="recipes" aria-selected="false" data-p="recipes">Recipes</button>
+  <button type="button" role="tab" id="t-connect" aria-controls="connect" aria-selected="false" data-p="connect">Connect your tools</button>
+</nav>
+
+<main>
+<section class="panel" id="try" role="tabpanel" aria-labelledby="t-try">
+  <div class="ex"><span class="foot">Examples:</span>
+    <button type="button" data-e="0">Route a support ticket</button><button type="button" data-e="1">Refund request?</button><button type="button" data-e="2">Pick a tool</button></div>
+  <div class="grid2">
+    <div class="box">
+      <label for="st">The message or text</label><textarea id="st"></textarea>
+      <label for="qu">Your question</label><input id="qu" type="text">
+      <span class="lab" id="mode-l">Answer type</span>
+      <div class="mode" role="radiogroup" aria-labelledby="mode-l">
+        <label class="rad"><input type="radio" name="mode" value="choose" checked> Pick one option</label>
+        <label class="rad"><input type="radio" name="mode" value="yes"> Yes or no</label>
+      </div>
+      <div id="optbox">
+        <span class="lab">Options <span class="soft">(a short description works best)</span></span>
+        <div id="opts"></div><button class="add" type="button" id="addopt">+ Add option</button>
+      </div>
+      <button class="btn go" type="button" id="decide">Decide</button>
+    </div>
+    <div class="box res" aria-live="polite">
+      <p class="meta" id="meta">Press Decide to see the answer.</p>
+      <h3 id="win"></h3>
+      <div id="rows"></div>
+      <div class="code" id="codebox" hidden><pre id="code"></pre><button type="button" class="copy" id="copycode">Copy</button></div>
+    </div>
+  </div>
+</section>
+
+<section class="panel wide" id="run" role="tabpanel" aria-labelledby="t-run" hidden>
+  <div class="cols">
+    <div aria-label="Build the recipe">
+      <div class="step"><h2><i>1</i>Add your items</h2>
+        <div class="chips" role="group" aria-label="Where the items come from">
+          <button type="button" class="chip on" data-src="sheet" aria-pressed="true">Spreadsheet (CSV, Excel)</button>
+          <button type="button" class="chip" data-src="folder" aria-pressed="false">Folder of documents</button>
+          <button type="button" class="chip" data-src="paste" aria-pressed="false">Paste a list</button>
+        </div>
+        <div class="pane" id="pane-sheet"><label for="f-sheet" class="lab">CSV or Excel file</label><input type="file" id="f-sheet" accept=".csv,.xlsx"></div>
+        <div class="pane" id="pane-folder" hidden><label for="f-folder" class="lab">Folder with .txt or .md files</label><input type="file" id="f-folder" webkitdirectory></div>
+        <div class="pane" id="pane-paste" hidden><label for="paste" class="lab">One item per line</label><textarea id="paste" placeholder="The order arrived broken.&#10;I was charged twice."></textarea></div>
+        <p class="file" id="srcinfo">No items yet. Files stay on this computer.</p>
+        <button type="button" class="link" id="sample">Or try 8 sample support tickets</button>
+      </div>
+
+      <div class="step"><h2><i>2</i>What should it read?</h2>
+        <p class="h">Check one or more columns. The model reads them together.</p>
+        <div class="ck" id="cols"><span class="soft">Add your items first.</span></div></div>
+
+      <div class="step"><h2><i>3</i>Ask your questions</h2>
+        <p class="h">Each question adds a column. Use as many as you need.</p>
+        <div id="qs"></div>
+        <button class="add dashed" type="button" id="addq">+ Add a question: Pick one, Yes or no, Scale</button></div>
+
+      <div class="step"><h2><i>4</i>When should a person check?</h2>
+        <div class="rule"><label for="thr" class="plain">Flag a row when the model is less than</label>
+          <input type="number" id="thr" min="0" max="100" step="1" value="60"> % sure of any answer.</div></div>
+
+      <div class="actions">
+        <button class="btn" type="button" id="runbtn">Run</button>
+        <button class="btn ghost" type="button" id="savebtn">Save as recipe</button>
+      </div>
+      <div class="saverow" id="saverow" hidden>
+        <label for="rname" class="lab">Recipe name</label>
+        <div class="opt"><input type="text" id="rname" placeholder="support-triage" autocomplete="off" spellcheck="false"><button type="button" class="btn" id="savego">Save</button></div>
+        <p class="soft">Lowercase letters, numbers, - and _.</p>
+      </div>
+      <p class="msg-line" id="runmsg" role="status"></p>
+      <div class="loadrow"><label for="pick" class="lab">Load a saved recipe</label><select id="pick"></select></div>
+    </div>
+
+    <div aria-label="Results">
+      <div class="empty box" id="noresults">Results appear here. Add your items, ask a question, then press Run.</div>
+      <div id="results" hidden>
+        <div class="sum"><span class="k" id="sumtxt"></span>
+          <span class="seg" role="group" aria-label="Filter rows"><button type="button" class="on" id="f-all" aria-pressed="true"></button><button type="button" id="f-review" aria-pressed="false"></button></span></div>
+        <div class="tbl"><table><thead id="thead"></thead><tbody id="tbody"></tbody></table></div>
+        <p class="soft" id="capnote" hidden></p>
+        <div class="acts"><button class="btn" type="button" id="dl-csv">Download CSV</button><button class="btn ghost" type="button" id="dl-xlsx">Download Excel</button></div>
+        <div class="use"><h3>Use this recipe anywhere</h3><p id="usenote"></p><div id="uselines"></div></div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section class="panel" id="recipes" role="tabpanel" aria-labelledby="t-recipes" hidden>
+  <div id="reclist"></div>
+</section>
+
+<section class="panel" id="connect" role="tabpanel" aria-labelledby="t-connect" hidden>
+  <div class="conn" id="conn"></div>
+</section>
+</main>
+<script src="app.js"></script>
+</body>
+</html>
