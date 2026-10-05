@@ -1,5 +1,6 @@
 ---
 license: apache-2.0
+pipeline_tag: zero-shot-classification
 base_model: answerdotai/ModernBERT-large
 language: en
 tags:
