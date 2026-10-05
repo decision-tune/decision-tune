@@ -41,6 +41,7 @@ Demo = "https://huggingface.co/spaces/decision-tune/demo"
 
 [project.scripts]
 decision-tune = "decision_tune.cli:main"
+decisiontune = "decision_tune.cli:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/decision_tune"]
