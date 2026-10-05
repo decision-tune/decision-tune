@@ -343,10 +343,11 @@ async function run() {
   msg.className = "msg-line";
   msg.textContent = "Running on this computer...";
   $("runbtn").disabled = true;
+  const from = src, input = src.input, cols = src.preview.columns;  // the source may change while this runs
   try {
-    const out = await postJSON("/api/run", { recipe, input: src.input });
-    last = { out, recipe, cols: src.preview.columns };
-    msg.textContent = "";
+    const out = await postJSON("/api/run", { recipe, input });
+    last = { out, recipe, cols };
+    msg.textContent = src === from ? "" : "Results are for the previous file.";
     renderResults();
   } catch (e) { msg.className = "msg-line bad"; msg.textContent = e.message; }
   updateRun();
