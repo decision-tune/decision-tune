@@ -57,7 +57,7 @@ The MLX backend uses laya-mlx (Apache-2.0).
    decisiontune app
    ```
 
-The app opens in your browser. The first time, it asks before it downloads the model (1.58 GB). Everything runs on your computer. On a Mac, a short decision takes about 10 ms.
+The app opens in your browser. The first time, it asks before it downloads the model (1.58 GB). Everything runs on your computer. On a Mac with Apple silicon (MLX), a short decision takes about 10 ms.
 
 Both command names work: `decision-tune` and `decisiontune`. This page uses `decisiontune` in the new sections.
 
@@ -117,7 +117,7 @@ A recipe is a small JSON file. It lists the columns to read, the questions to as
 }
 ```
 
-Question types: `choose` (needs `options`), `yes_no`, and `scale` (needs `levels`, answers as key and description).
+Question types: `choose` (needs `options`), `yes_no`, and `scale` (needs `levels`). `levels` defines the keys and their descriptions. The answer is the key.
 
 Run a recipe on a `.csv` or `.xlsx` file, or on a folder of `.txt` and `.md` files:
 
@@ -171,11 +171,16 @@ If the client cannot find the command, give the full path (`which decisiontune` 
 
 ```bash
 decision-tune serve              # app: http://127.0.0.1:8000/   endpoint: http://127.0.0.1:8000/decide
+```
+
+In a second terminal:
+
+```bash
 curl -s http://127.0.0.1:8000/decide -H 'Content-Type: application/json' -d '{"state": "What is the weather tomorrow in Paris?", "question": "Which tool should be called?", "options": ["get_weather", "send_email", "create_calendar_event"]}'
 curl -s http://127.0.0.1:8000/decide -H 'Content-Type: application/json' -d '{"state": "The order arrived broken. I want my money back.", "question": "Is the customer asking for a refund?"}'
 ```
 
-Send `Content-Type: application/json` with every POST. The server also serves the app at `http://127.0.0.1:8000/`. To open the app in your browser, run `decisiontune app` (it tries the next 10 ports if 8000 is busy).
+Send `Content-Type: application/json` with every JSON POST. The server also serves the app at `http://127.0.0.1:8000/`. To open the app in your browser, run `decisiontune app` (it tries the next 10 ports if 8000 is busy).
 
 To run a recipe, POST rows as JSON to `/recipes/<name>/run`. To send a CSV text body, use `Content-Type: text/csv`:
 
