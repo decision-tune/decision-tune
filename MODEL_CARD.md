@@ -195,7 +195,7 @@ The weights have three stages:
 2. **Stage 1.** One epoch on 17,000 items: 10,000 synthetic typed decisions (tasksource/procedural-typed-decisions) and 1,000 items each from Circa, CondaQA, GoEmotions, civil_comments, PubMedQA, Pavlick formality scores and QMSum. In this stage, we cut states to 256 tokens.
 3. **Stage 2.** Two epochs on 16 training sets: BANKING77, CLINC150, GSM8K (code made the wrong options), WinoGrande, ContractNLI, Amazon ESCI, twitter-financial-news-sentiment, four tool-use sets (BFCL-style, API-Bank-style, ToolRet-style and When2Call-style), HellaSwag, a CLadder-style set from our generator, a HoVer-style set that we made from 2WikiMultihopQA, the RAGTruth train split, and the stage 1 items again at weight 2.5.
 
-We made the tool-use sets, with the When2Call-style rows, from Glaive, ToolACE, Hermes and Funcdex tool dialogs. We did not use NVIDIA When2Call or xLAM data in training. A larger open model, Clef-Flash (Cloudflare/clef-flash, Apache-2.0), taught the model during part of its training. We used its soft labels on 8 datasets (distillation weight 0.5, temperature 1.0). The training run for DecisionTune 1.0 cost $1.69 on a rented A100.
+We made the tool-use sets, with the When2Call-style rows, from Glaive, ToolACE, Hermes and Funcdex tool dialogs. We did not use NVIDIA When2Call or xLAM data in training. A larger open model, Clef-Flash (Cloudflare/clef-flash, Apache-2.0), taught the model during part of its training. We used its soft labels on 8 datasets (distillation weight 0.5, temperature 1.0).
 
 ## Training data and licenses
 
