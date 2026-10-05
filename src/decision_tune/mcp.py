@@ -7,7 +7,9 @@ stdout carries protocol messages only; everything else goes to stderr. The model
 import contextlib
 import json
 import os
+import stat
 import sys
+import tempfile
 import time
 import traceback
 
@@ -16,7 +18,11 @@ from .recipe import Recipe, list_recipes, read_rows, write_csv, write_xlsx
 
 VERSIONS = ("2025-06-18", "2025-03-26", "2024-11-05")
 INSTRUCTIONS = "DecisionTune picks an option or answers yes/no about a piece of text, on this computer."
-MAX_ROWS = 200  # rows returned to the assistant; the output file always has all of them
+REPLY_ROWS = 200  # rows returned to the assistant; the output file always has all of them
+MAX_LINE_BYTES = 30 * 1024 * 1024  # one JSON-RPC line
+MAX_INPUT_BYTES = 200 * 1024 * 1024  # one input file
+MAX_ROWS = 100_000  # rows in one run
+MAX_DECISIONS = 2_000_000  # rows x questions in one run
 SAFE_SUFFIXES = ("-decided.csv", "-decided.xlsx")  # the only existing files a tool may overwrite
 
 TOOLS = [
@@ -50,8 +56,8 @@ def _fail(msg):
 
 
 def _ok(summary, result):
-    result = json.loads(json.dumps(result, default=str))  # e.g. dates from an .xlsx
-    return {"content": [{"type": "text", "text": f"{summary}\n{json.dumps(result, separators=(',', ':'))}"}],
+    result = json.loads(json.dumps(result, default=str, allow_nan=False))  # e.g. dates from an .xlsx
+    return {"content": [{"type": "text", "text": f"{summary}\n{json.dumps(result, separators=(',', ':'), allow_nan=False)}"}],
             "structuredContent": result, "isError": False}
 
 
@@ -67,9 +73,48 @@ def _check_output(p):
         raise ValueError("output_path must end with .csv or .xlsx")
     if not os.path.isdir(os.path.dirname(p)):
         raise ValueError(f"folder {os.path.dirname(p)!r} does not exist")
+    _refuse_clobber(p)
+    return p
+
+
+def _refuse_clobber(p):
     if os.path.lexists(p) and (os.path.islink(p) or not p.lower().endswith(SAFE_SUFFIXES)):
         raise ValueError(f"{p!r} already exists and will not be overwritten; use a new name, or one ending in -decided.csv")
-    return p
+
+
+def _input_file(p):
+    try:
+        st = os.stat(p)
+    except OSError as e:
+        raise ValueError(f"{p!r} cannot be read: {e.strerror or type(e).__name__}") from None
+    if not (stat.S_ISREG(st.st_mode) or stat.S_ISDIR(st.st_mode)):  # a FIFO or device would block the server
+        raise ValueError(f"{p!r} is not a file or a folder")
+    if stat.S_ISREG(st.st_mode) and st.st_size > MAX_INPUT_BYTES:
+        raise ValueError(f"{p!r} is larger than {MAX_INPUT_BYTES // 2**20} MB")
+
+
+def _write_output(p, write, columns, rows):
+    """Write to a new temp file beside p, then swap it in: the destination inode is never opened, so a hard link keeps its content."""
+    fd, tmp = tempfile.mkstemp(dir=os.path.dirname(p), prefix=".decisiontune-", suffix=os.path.splitext(p)[1])
+    try:
+        umask = os.umask(0)
+        os.umask(umask)
+        os.fchmod(fd, 0o666 & ~umask)
+        os.close(fd)
+        write(tmp, columns, rows)
+        _refuse_clobber(p)  # again: the run may have taken minutes
+        if p.lower().endswith(SAFE_SUFFIXES):
+            os.replace(tmp, p)
+            return
+        try:
+            os.link(tmp, p)  # exclusive: a file that appeared meanwhile makes this fail instead of being overwritten
+        except FileExistsError:
+            raise ValueError(f"{p!r} already exists and will not be overwritten; use a new name, or one ending in -decided.csv") from None
+        except OSError:  # a filesystem without hard links; the check above is the guard
+            os.replace(tmp, p)
+    finally:
+        with contextlib.suppress(FileNotFoundError):
+            os.unlink(tmp)
 
 
 class Server:
@@ -87,8 +132,9 @@ class Server:
         if not isinstance(a.get("question"), str) or not a["question"].strip():
             raise ValueError("question is required: a non-empty string")
         opts = a.get("options")
-        if opts is not None and not (isinstance(opts, dict) or (isinstance(opts, list) and all(isinstance(o, str) for o in opts))):
-            raise ValueError("options must be a list of strings or an object of key to description")
+        if opts is not None and not (isinstance(opts, list) and all(isinstance(o, str) for o in opts)
+                                     or isinstance(opts, dict) and all(isinstance(v, str) for v in opts.values())):
+            raise ValueError("options must be a list of strings or an object of key to description string")
         m, t = self.get_model(), time.perf_counter()
         if opts:
             out = m.choose(a["state"], a["question"], opts)
@@ -113,22 +159,23 @@ class Server:
         out_path = _check_output(a["output_path"]) if a.get("output_path") is not None else None
         if "input_path" in a:
             src = _path(a["input_path"], "input_path")
-            if not os.path.exists(src):
-                raise ValueError(f"{src!r} does not exist")
+            _input_file(src)
             cols, rows = read_rows(src)
         else:
             rows = a["rows"]
             if not isinstance(rows, list) or not all(isinstance(x, dict) for x in rows):
                 raise ValueError("rows must be an array of objects")
             cols = list(dict.fromkeys(k for x in rows for k in x))
+        if len(rows) > MAX_ROWS or len(rows) * len(recipe.questions) > MAX_DECISIONS:
+            raise ValueError(f"too much work in one run: at most {MAX_ROWS} rows and {MAX_DECISIONS} decisions; split the input")
         t = time.perf_counter()
         results = recipe.run(rows, model=self.get_model()) if rows else []
         res = {"count": len(results), "needs_review": sum(bool(x.get("needs_review")) for x in results),
                "ms": round((time.perf_counter() - t) * 1000, 1)}
         if out_path:
-            (write_xlsx if out_path.lower().endswith(".xlsx") else write_csv)(out_path, recipe.output_columns(cols), results)
+            _write_output(out_path, write_xlsx if out_path.lower().endswith(".xlsx") else write_csv, recipe.output_columns(cols), results)
             res["output_path"] = out_path
-        res.update(rows=results[:MAX_ROWS], truncated=len(results) > MAX_ROWS)
+        res.update(rows=results[:REPLY_ROWS], truncated=len(results) > REPLY_ROWS)
         return _ok(f"{res['count']} rows, {res['needs_review']} need review" + (f", saved to {out_path}" if out_path else ""), res)
 
     def list_recipes(self, a):
@@ -136,10 +183,14 @@ class Server:
         return _ok(f"{len(found)} recipes: " + ", ".join(r["name"] for r in found), {"recipes": found})
 
     def call(self, params):
-        name, args = params.get("name"), params.get("arguments") or {}
+        name, args = params.get("name"), params.get("arguments", {})
+        if not isinstance(name, str):
+            return _fail("name must be a string: decide, run_recipe or list_recipes")
         fn = {"decide": self.decide, "run_recipe": self.run_recipe, "list_recipes": self.list_recipes}.get(name)
         if fn is None:
             return _fail(f"unknown tool {name!r}; use decide, run_recipe or list_recipes")
+        if args is None:
+            args = {}
         if not isinstance(args, dict):
             return _fail("arguments must be an object")
         try:
@@ -169,43 +220,82 @@ def _err(id_, code, message):
     return {"jsonrpc": "2.0", "id": id_, "error": {"code": code, "message": message}}
 
 
+def _bad_id(v):
+    return isinstance(v, bool) or not isinstance(v, (str, int))
+
+
+def _no_constant(c):
+    raise ValueError(f"{c} is not valid JSON")
+
+
 def run_stdio(model_factory, stdin=sys.stdin, stdout=sys.stdout):
-    srv, out = Server(model_factory), stdout
+    srv, out, saved = Server(model_factory), stdout, None
     if stdin is sys.stdin and hasattr(stdin, "reconfigure"):
         stdin.reconfigure(encoding="utf-8")
-    if out is sys.stdout and hasattr(out, "reconfigure"):
-        out.reconfigure(encoding="utf-8")
+    if out is sys.stdout:
+        try:
+            if out.fileno() == 1:  # protocol on a private copy of fd 1; native writes to fd 1 now land on stderr
+                out.flush()
+                saved = os.dup(1)
+                os.dup2(2, 1)
+                out = os.fdopen(saved, "w", encoding="utf-8", newline="\n", closefd=False)
+        except (AttributeError, OSError, ValueError):  # not a real stdout (captured, closed): keep it as is
+            pass
 
     def send(obj):
-        out.write(json.dumps(obj) + "\n")
+        try:
+            line = json.dumps(obj, allow_nan=False)
+        except (ValueError, RecursionError):
+            line = json.dumps(_err(obj.get("id"), -32603, "internal error: response is not valid JSON"))
+        out.write(line + "\n")
         out.flush()
 
-    with contextlib.redirect_stdout(sys.stderr):  # a stray print (a download, a library) must not corrupt the protocol
-        for line in stdin:
-            if not line.strip():
-                continue
-            try:
-                msg = json.loads(line)
-            except ValueError:
-                send(_err(None, -32700, "parse error: not valid JSON"))
-                continue
-            if not isinstance(msg, dict):
-                send(_err(None, -32600, "invalid request: expected a JSON object"))
-                continue
-            if "method" not in msg:  # a response to us (we send no requests): ignore
-                if "id" in msg and "result" not in msg and "error" not in msg:
-                    send(_err(msg["id"], -32600, "invalid request: no method"))
-                continue
-            if "id" not in msg:  # a notification gets no answer
-                continue
-            id_, method, params = msg["id"], msg["method"], msg.get("params", {})
-            if not isinstance(method, str) or not isinstance(params, dict):
-                send(_err(id_, -32600 if not isinstance(method, str) else -32602, "invalid request: method must be a string, params an object"))
-                continue
-            try:
-                send({"jsonrpc": "2.0", "id": id_, "result": srv.handle(method, params)})
-            except KeyError:
-                send(_err(id_, -32601, f"method not found: {method}"))
-            except Exception as e:
-                print(traceback.format_exc(), file=sys.stderr)
-                send(_err(id_, -32603, f"internal error: {type(e).__name__}"))
+    def drain():  # skip the rest of an oversized line
+        while (rest := stdin.readline(65536)) and not rest.endswith("\n"):
+            pass
+
+    try:
+        with contextlib.redirect_stdout(sys.stderr):  # a stray print (a download, a library) must not corrupt the protocol
+            while line := stdin.readline(MAX_LINE_BYTES + 1):
+                body = line.rstrip("\r\n")
+                if len(body) > MAX_LINE_BYTES or len(body.encode("utf-8", "replace")) > MAX_LINE_BYTES:
+                    if not line.endswith("\n"):
+                        drain()
+                    send(_err(None, -32600, f"invalid request: line is longer than {MAX_LINE_BYTES} bytes"))
+                    continue
+                if not line.strip():
+                    continue
+                try:
+                    msg = json.loads(line, parse_constant=_no_constant)
+                except Exception:  # ValueError, or RecursionError on deep nesting
+                    send(_err(None, -32700, "parse error: not valid JSON"))
+                    continue
+                if not isinstance(msg, dict):
+                    send(_err(None, -32600, "invalid request: expected a JSON object"))
+                    continue
+                if "method" not in msg:  # a response to us (we send no requests): ignore
+                    if "id" in msg and "result" not in msg and "error" not in msg:
+                        send(_err(None if _bad_id(msg["id"]) else msg["id"], -32600, "invalid request: no method"))
+                    continue
+                id_ = msg.get("id")
+                if msg.get("jsonrpc") != "2.0" or "id" in msg and _bad_id(id_):
+                    send(_err(None if _bad_id(id_) else id_, -32600, 'invalid request: "jsonrpc" must be "2.0" and id a string or an integer'))
+                    continue
+                if "id" not in msg:  # a notification gets no answer
+                    continue
+                method, params = msg["method"], msg.get("params", {})
+                if not isinstance(method, str) or not isinstance(params, dict):
+                    send(_err(id_, -32600 if not isinstance(method, str) else -32602, "invalid request: method must be a string, params an object"))
+                    continue
+                try:
+                    send({"jsonrpc": "2.0", "id": id_, "result": srv.handle(method, params)})
+                except KeyError:
+                    send(_err(id_, -32601, f"method not found: {method}"))
+                except Exception as e:
+                    print(traceback.format_exc(), file=sys.stderr)
+                    send(_err(id_, -32603, f"internal error: {type(e).__name__}"))
+    finally:
+        if saved is not None:
+            out.flush()
+            os.dup2(saved, 1)  # give the caller its stdout back
+            os.close(saved)
