@@ -4,7 +4,9 @@ import http.client
 import io
 import json
 import os
+import re
 import threading
+import zipfile
 
 import pytest
 
@@ -26,8 +28,12 @@ def fk_choose(state, question, keys):
     return keys[n % len(keys)], 0.4 + (n % 55) / 100
 
 
+REFUND_YES = {"Order #4417", "Double charge", "Where is my box"}  # rows 0, 1 and 3 of tickets.csv answer yes, the other five no
+
+
 def fk_yes(state, question):
-    return (0.95 if "refund" in str(state) else 0.1) + (_n(state, question) % 5) / 100
+    yes = "refund" in str(state) or (isinstance(state, dict) and state.get("subject") in REFUND_YES)
+    return (0.95 if yes else 0.1) + (_n(state, question) % 5) / 100
 
 
 class Fake:
@@ -180,6 +186,10 @@ def test_run_endpoint_uses_model(srv):
         assert row["needs_review"] is bad and row["subject"] == src["subject"]
         flagged += bad
     assert 0 < flagged < 8  # the fake really does produce both flagged and clean rows
+    assert [r["refund"] for r in out["rows"]] == ["yes", "yes", "no", "yes", "no", "no", "no", "no"]  # a server that says "no" for every row fails here
+    for r in out["rows"]:
+        p = r["refund_p_yes"]
+        assert r["refund_confidence"] == round(max(p, 1 - p), 4) and (p >= 0.9 if r["refund"] == "yes" else p <= 0.2)
     assert len({r["team"] for r in out["rows"]}) > 1 and len({r["tone"] for r in out["rows"]}) > 1
     assert out["columns"][:2] == ["subject", "message"] and {"team", "refund", "tone", "needs_review"} <= set(out["columns"])
     assert out["needs_review"] == flagged and out["ms"] >= 0 and out["failed"] == []
@@ -635,3 +645,35 @@ def test_input_column_named_error_is_not_a_failure(srv):
     srv.fake.yes_no = lambda *a: (_ for _ in ()).throw(RuntimeError("too long"))
     st, _, out = post(srv, "/api/run", {"recipe": r, "input": {"type": "csv", "data": csv_in}})
     assert out["failed"] == [0, 1] and out["rows"][0]["error"].startswith("RuntimeError") and out["needs_review"] == 2
+
+
+# ---- T2-fix2: a data row wider than the limit is refused even when the header is narrow
+def _wide_row_xlsx(width):
+    import openpyxl
+
+    wb = openpyxl.Workbook()  # in memory: header width 1, then one row of the given width
+    ws = wb.active
+    ws.append(["a"])
+    ws.append(["v"] * width)
+    raw = io.BytesIO()
+    wb.save(raw)
+    out = io.BytesIO()
+    with zipfile.ZipFile(raw) as zin, zipfile.ZipFile(out, "w") as zout:  # drop the stored dimensions, as a hostile file would
+        for i in zin.infolist():
+            data = zin.read(i.filename)
+            zout.writestr(i, re.sub(rb"<dimension[^>]*/>", b"", data) if i.filename.startswith("xl/worksheets/") else data)
+    return base64.b64encode(out.getvalue()).decode()
+
+
+@pytest.mark.parametrize("lowered", ["MAX_COLUMNS", "MAX_CELLS"])
+def test_xlsx_wide_data_row_is_refused_with_a_narrow_header(srv, monkeypatch, lowered):
+    from decision_tune import server
+
+    monkeypatch.setattr(server, "MAX_COLUMNS", 5)
+    if lowered == "MAX_CELLS":
+        monkeypatch.setattr(server, "MAX_CELLS", 1)
+    wide = _wide_row_xlsx(6)  # MAX_COLUMNS + 1
+    _limit(*post(srv, "/api/preview", {"input": {"type": "xlsx", "data": wide}})[::2])
+    st, _, out = post(srv, "/api/preview", {"input": {"type": "xlsx", "data": _wide_row_xlsx(5)}})
+    if lowered == "MAX_COLUMNS":
+        assert st == 200 and out["columns"] == ["a"] and out["count"] == 1  # a row exactly at the limit is fine

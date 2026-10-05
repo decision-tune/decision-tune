@@ -108,11 +108,19 @@ def _xlsx_rows(raw):
     try:
         wb = openpyxl.load_workbook(io.BytesIO(raw), read_only=True, data_only=True)
         try:
-            it = wb.worksheets[0].iter_rows(values_only=True)
-            cols = [str(c) for c in next(it, ())]
+            # openpyxl never yields more than MAX_COLUMNS + 1 cells per row, whatever the file says; a value in the last one is too wide
+            it = wb.worksheets[0].iter_rows(values_only=True, max_col=MAX_COLUMNS + 1, max_row=MAX_ROWS + 2)  # header + MAX_ROWS + 1 data rows: one over is enough to refuse
+            head = list(next(it, ()))
+            if len(head) > MAX_COLUMNS and head[MAX_COLUMNS] is not None:
+                raise _Limit(f"too many columns: the limit is {MAX_COLUMNS:,} columns")
+            while head and head[-1] is None:  # max_col pads every row with empty cells
+                head.pop()
+            cols = [str(c) for c in head]
             _check(cols, ())
             records = []
             for n, r in enumerate(it, 1):  # blank rows count: a sheet of empty rows is still work to scan
+                if len(r) > MAX_COLUMNS and r[MAX_COLUMNS] is not None:
+                    raise _Limit(f"too many columns: the limit is {MAX_COLUMNS:,} columns")
                 _check(cols, range(n))
                 if any(v is not None for v in r):
                     records.append(dict(zip(cols, r)))

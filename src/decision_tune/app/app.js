@@ -168,6 +168,7 @@ const checkedCols = () => [...document.querySelectorAll("#cols input:checked")].
 // Forget the current items at once, cancel any preview still in flight, and keep Run off until a new source is ready.
 function dropSource() {
   ++srcToken;
+  clearTimeout(pasteTimer);  // a pasted list still waiting to be previewed is an older source too
   src = null;
   renderCols();
   $("runbtn").disabled = true;
@@ -204,17 +205,19 @@ $("f-sheet").addEventListener("change", async (ev) => {
   const f = ev.target.files[0];
   if (!f) return;
   dropSource();  // before the awaits: the old items must not stay runnable while the file is read
+  const gen = srcToken;  // the source generation: a read that finishes after a newer source was chosen is dropped
   const ext = f.name.toLowerCase().split(".").pop();
-  if (ext === "csv") setSource({ type: "csv", data: await f.text() }, f.name);
-  else if (ext === "xlsx") setSource({ type: "xlsx", data: toBase64(await f.arrayBuffer()) }, f.name);
+  if (ext === "csv") { const data = await f.text(); if (gen === srcToken) setSource({ type: "csv", data }, f.name); }
+  else if (ext === "xlsx") { const buf = await f.arrayBuffer(); if (gen === srcToken) setSource({ type: "xlsx", data: toBase64(buf) }, f.name); }
   else srcInfo("Use a .csv or .xlsx file.", true);
 });
 $("f-folder").addEventListener("change", async (ev) => {
   dropSource();
+  const gen = srcToken;
   const files = [...ev.target.files].filter((f) => /\.(txt|md)$/i.test(f.name)).sort((a, b) => a.name.localeCompare(b.name));
   if (!files.length) { srcInfo("No .txt or .md files in that folder.", true); return; }
   const rows = await Promise.all(files.map(async (f) => ({ file: f.name, text: await f.text() })));
-  setSource({ type: "rows", data: rows }, "Folder", ["file"]);
+  if (gen === srcToken) setSource({ type: "rows", data: rows }, "Folder", ["file"]);
 });
 let pasteTimer = 0;
 $("paste").addEventListener("input", () => {
