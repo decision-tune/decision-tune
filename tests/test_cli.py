@@ -114,6 +114,9 @@ def test_serve_wiring(env, monkeypatch):
     assert s[0][2:] == ("127.0.0.1", 8000, False, False)
     assert s[1][2:] == ("0.0.0.0", 9000, True, False)
     assert s[2][2:] == ("127.0.0.1", 8000, False, False)
+    for h in ("127.1", "LOCALHOST", "127.0.0.2", "::1"):  # every loopback spelling keeps the Host check
+        cli.main(["serve", "--host", h])
+        assert [c for c in env if c[0] == "serve"][-1][4] is False, h
 
 
 def test_app_opens_browser_after_model_load_and_bind(real_bind):

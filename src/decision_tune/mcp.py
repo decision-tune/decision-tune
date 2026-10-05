@@ -175,7 +175,8 @@ class Server:
             recipe = Recipe.from_dict(r)
         elif isinstance(r, str) and r:
             if r.endswith(".json"):  # a path; recipe names stay allowed
-                self.allow(_path(r, "recipe"))
+                r = os.path.realpath(os.path.expanduser(r))  # resolve before ".." collapses, then load that same path
+                self.allow(r)
             recipe = Recipe.load(r)
         else:
             raise ValueError("recipe is required: a name or a recipe object")

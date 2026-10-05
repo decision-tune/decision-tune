@@ -1,7 +1,9 @@
 import argparse
 import errno
+import ipaddress
 import json
 import os
+import socket
 import sys
 import tempfile
 import time
@@ -105,6 +107,17 @@ def main(argv=None):
         raise SystemExit(f"decision-tune: {e}")
 
 
+def _loopback(host):
+    """True when the host is unset or every address it names is loopback (127.1, LOCALHOST, ::1 ...)."""
+    if host is None:
+        return True
+    try:
+        addrs = {i[4][0] for i in socket.getaddrinfo(host, None)}
+    except OSError:
+        return False
+    return bool(addrs) and all(ipaddress.ip_address(a.split("%")[0]).is_loopback for a in addrs)
+
+
 def _main(argv=None):
     ap = argparse.ArgumentParser(prog="decision-tune", description="DecisionTune 1.0: pick an option, or get P(yes), with one encoder pass")
     ap.add_argument("--version", action="version", version=f"decision-tune {__version__}")
@@ -175,7 +188,7 @@ def _main(argv=None):
         check_options(args.option)  # before the model loads
     m = _load(args)
     if args.cmd == "serve":
-        return server.serve(m, args.host or "127.0.0.1", args.port, explicit_host=args.host not in (None, "127.0.0.1", "localhost", "::1"))
+        return server.serve(m, args.host or "127.0.0.1", args.port, explicit_host=not _loopback(args.host))
     out = decide(m, args.state, args.question, args.option)
     if args.json:
         print(json.dumps(out, indent=2))

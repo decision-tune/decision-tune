@@ -658,3 +658,13 @@ def test_decide_validates_options_like_http(opts):
     assert r["result"]["isError"] is True and "options must be 2 to 32" in r["result"]["content"][0]["text"]
     assert f.calls == [] and loads == 0
     assert one(call(2, "decide", state="s", question="q?", options=[]))["result"]["structuredContent"]["answer"] == "yes"
+
+
+def test_roots_recipe_path_dotdot_through_symlink(tmp_path):
+    # /root/link -> /outside/sub; "/root/link/../r.json" must not open /outside/r.json
+    root, outside = _root(tmp_path), tmp_path / "outside"
+    (outside / "sub").mkdir(parents=True)
+    (outside / "r.json").write_text(json.dumps({"name": "evil", "read": [], "questions": [{"name": "q", "type": "yes_no", "question": "x?"}]}))
+    (root / "link").symlink_to(outside / "sub")
+    (res,), _, _ = rpc(call(1, "run_recipe", recipe=str(root / "link" / ".." / "r.json"), rows=[{"a": "b"}]), roots=[str(root)])
+    _refused(res)
